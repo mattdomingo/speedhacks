@@ -8,3 +8,5 @@ __pycache__/
 .DS_Store
 *.pyc
 .vercel/
+# Private per-device iOS pairing credentials (never bundle these).
+.app-device*/

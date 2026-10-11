@@ -19,6 +19,7 @@
 		2FECAB058CC3AD5929247CD5 /* MemoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BBCDB93254E4D0B4A9D28C0 /* MemoryStore.swift */; };
 		361102804E17D79431DC41AE /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15625B2FCE46BF56317807D6 /* HomeView.swift */; };
 		38957AF2FC8A63BCE44CAD99 /* Indexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DB81680B6D50AECFAC4F690 /* Indexer.swift */; };
+		3B1E9965625622684831C26A /* ConnectedMemoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CD78C59F750D3C85E858E02 /* ConnectedMemoryTests.swift */; };
 		406703CCAB1445F957ED0D93 /* CardModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66C3C632DC5BC6F14B530F16 /* CardModels.swift */; };
 		47EC95C9522AD944BE85267C /* SettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11652B034F9A70B511903728 /* SettingsSheet.swift */; };
 		4EB1353739696E1492E06EA6 /* GeistMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 5D365CC4401D57DB1489C86E /* GeistMono-Regular.ttf */; };
@@ -37,6 +38,7 @@
 		C1F165CD2E1C495FBBD0CF38 /* PersonCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF079C2F6746BEBDBF63C072 /* PersonCard.swift */; };
 		C6221D5AC945ECABF9D37D54 /* StephOrb.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE553B10BA3AD19FAE553F17 /* StephOrb.swift */; };
 		C7BFB3C391851B463C856E6C /* Sora-Light.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B6B4011E55509BD83A246ABA /* Sora-Light.ttf */; };
+		D425E203ED56117A0D4765F4 /* MemoryConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FF4BA433D89CE6C4877A522 /* MemoryConnection.swift */; };
 		D553EA86DEF161C556E371A9 /* OFL-Sora.txt in Resources */ = {isa = PBXBuildFile; fileRef = C329AD648ED03DF406C6FFB8 /* OFL-Sora.txt */; };
 		D6846BD5BE64E1C405D90615 /* LocationWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE494FFC63F09063DF7F13E6 /* LocationWatcher.swift */; };
 		E2C727B740492D34A94DB7CF /* Voice.swift in Sources */ = {isa = PBXBuildFile; fileRef = D54F5ABE99400C4E52CFBE6F /* Voice.swift */; };
@@ -73,6 +75,7 @@
 		070155B9BB83C7A8FE4A1DC2 /* Sora-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Sora-Regular.ttf"; sourceTree = "<group>"; };
 		0CC3AEFBF39CA583339F9103 /* Sora-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Sora-Medium.ttf"; sourceTree = "<group>"; };
 		0F7BE5CBE8CDEAFE26EBF47B /* Recall.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Recall.xcconfig; sourceTree = "<group>"; };
+		0FF4BA433D89CE6C4877A522 /* MemoryConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryConnection.swift; sourceTree = "<group>"; };
 		1005E833E5B0633EB436B812 /* LocalBrain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalBrain.swift; sourceTree = "<group>"; };
 		11652B034F9A70B511903728 /* SettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSheet.swift; sourceTree = "<group>"; };
 		15625B2FCE46BF56317807D6 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
@@ -97,6 +100,7 @@
 		811E6D4B237EA3F38982C239 /* RecallUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RecallUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		819AB54FA61730166660B2C2 /* OFL-GeistMono.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OFL-GeistMono.txt"; sourceTree = "<group>"; };
 		9116D718A58EEBB60F26FCB7 /* RecallTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RecallTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		9CD78C59F750D3C85E858E02 /* ConnectedMemoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectedMemoryTests.swift; sourceTree = "<group>"; };
 		A7199996DA9E7477AC3C997C /* RecallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecallTests.swift; sourceTree = "<group>"; };
 		B36AE8F7364BAA3664898F34 /* WalkthroughTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalkthroughTests.swift; sourceTree = "<group>"; };
 		B6B4011E55509BD83A246ABA /* Sora-Light.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Sora-Light.ttf"; sourceTree = "<group>"; };
@@ -150,6 +154,7 @@
 			children = (
 				CE37A6316BC89440F2922F98 /* Listener.swift */,
 				1005E833E5B0633EB436B812 /* LocalBrain.swift */,
+				0FF4BA433D89CE6C4877A522 /* MemoryConnection.swift */,
 				DE838A4A095F8220D88EA3F5 /* ProactiveEngine.swift */,
 				685B7E22BDB694D5DEF8B89A /* StephClient.swift */,
 				D54F5ABE99400C4E52CFBE6F /* Voice.swift */,
@@ -204,6 +209,7 @@
 		9F3DBEAA2D36FB3151663C54 /* RecallTests */ = {
 			isa = PBXGroup;
 			children = (
+				9CD78C59F750D3C85E858E02 /* ConnectedMemoryTests.swift */,
 				A7199996DA9E7477AC3C997C /* RecallTests.swift */,
 			);
 			path = RecallTests;
@@ -407,6 +413,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3B1E9965625622684831C26A /* ConnectedMemoryTests.swift in Sources */,
 				B09CE8D1EC4414DE6EA41CB2 /* RecallTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -435,6 +442,7 @@
 				75E2DAEBE42FF991FB849161 /* Listener.swift in Sources */,
 				13D45501E3A5858F4AEB5342 /* LocalBrain.swift in Sources */,
 				D6846BD5BE64E1C405D90615 /* LocationWatcher.swift in Sources */,
+				D425E203ED56117A0D4765F4 /* MemoryConnection.swift in Sources */,
 				2FECAB058CC3AD5929247CD5 /* MemoryStore.swift in Sources */,
 				E509075759ECB4A99C6D4D7B /* Models.swift in Sources */,
 				B07BFD467879A7724267EB8C /* PermissionView.swift in Sources */,

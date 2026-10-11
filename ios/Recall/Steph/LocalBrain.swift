@@ -38,10 +38,10 @@ struct StephAnswer: Codable, Sendable, Equatable {
 /// repeats what a memory says; it never composes new facts.
 enum LocalBrain {
     static func answer(question: String, retrieval: RetrievalResult, personMemories: [Memory] = []) -> StephAnswer {
-        let words = TextTools.words(question)
+        let words = TextTools.intentWords(question)
         let first = words.first ?? ""
 
-        if let person = retrieval.mentionedPeople.first, !["where", "wheres", "when"].contains(first) {
+        if let person = retrieval.mentionedPeople.first, TextTools.isPersonProfileQuestion(question, person: person) {
             let ids = (personMemories.isEmpty ? retrieval.memories.filter(\.personMatch).map(\.memory) : personMemories)
                 .prefix(6).map(\.id)
             let lead = person.relationship.map { "\(person.name) is your \($0)." } ?? "That's \(person.name)."
@@ -67,7 +67,15 @@ enum LocalBrain {
         default: .answer
         }
         let buttons = isWhere ? [TextTools.foundLabel(for: question), "Not there"] : ["Thanks!"]
-        let sentence = TextTools.secondPerson(memory.summary)
+        var sentence = TextTools.secondPerson(memory.summary)
+        // Calendar notes and saved-note details can contain the answer. Photo
+        // details are raw OCR/labels and should remain out of the spoken fallback.
+        let detail = memory.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if (memory.type == .event || memory.type == .note), !detail.isEmpty,
+           !sentence.localizedCaseInsensitiveContains(detail) {
+            let separator = sentence.last.map { ".!?".contains($0) } == true ? " " : ". "
+            sentence += separator + TextTools.secondPerson(String(detail.prefix(300)))
+        }
         return StephAnswer(answer: isWhere ? whereAnswer(sentence) : sentence, cardType: cardType,
                            memoryIDs: [memory.id], buttons: buttons)
     }

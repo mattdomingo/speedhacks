@@ -11,6 +11,7 @@ enum TextTools {
         "remind", "there", "here", "have", "has", "had", "s", "re", "ll", "d", "last", "time", "say", "said",
         "him", "her", "his", "she", "he", "they", "them", "their", "up", "from", "by", "as", "if", "then", "than",
         "any", "some", "all", "know", "remember", "put", "left", "today", "yesterday", "now", "get", "got",
+        "hey", "hi", "hello",
     ]
 
     /// Words that mean the same thing for finding memories.
@@ -80,9 +81,31 @@ enum TextTools {
     static func isQuestion(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasSuffix("?") { return true }
-        let first = words(trimmed).first ?? ""
+        let first = intentWords(trimmed).first ?? ""
         if first == "remember" || first == "note" { return false }
         return questionStarters.contains(first)
+    }
+
+    /// Ignore conversational addressing before classifying a spoken request.
+    static func intentWords(_ text: String) -> [String] {
+        var tokens = words(text)[...]
+        if let first = tokens.first, ["hey", "hi", "hello"].contains(first) { tokens = tokens.dropFirst() }
+        if tokens.first == "steph" { tokens = tokens.dropFirst() }
+        if tokens.first == "please" { tokens = tokens.dropFirst() }
+        return Array(tokens)
+    }
+
+    /// A name alone does not make a specific factual question a profile request.
+    static func isPersonProfileQuestion(_ question: String, person: Person) -> Bool {
+        var tokens = intentWords(question)
+        while let last = tokens.last, ["again", "please"].contains(last) { tokens.removeLast() }
+        let prefixes = [["who", "is"], ["who", "s"], ["whos"], ["tell", "me", "about"],
+                        ["what", "do", "you", "know", "about"]]
+        return prefixes.contains { prefix in
+            guard tokens.starts(with: prefix) else { return false }
+            let subject = Array(tokens.dropFirst(prefix.count))
+            return person.names.contains { words($0) == subject }
+        }
     }
 
     /// Strips "remember that" style lead-ins from a note.

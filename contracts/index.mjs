@@ -72,6 +72,16 @@ export const askSchema = z.object({
   time_zone: timeZone,
   memories: z.array(memorySchema).max(24).default([]),
 });
+// Provisioned devices can query shared patient evidence without receiving service tokens.
+export const appSessionSchema = z.object({ pin }).strict();
+export const appAskSchema = askSchema.extend({
+  pin,
+  excluded_ids: z.array(z.string().regex(/^shared:[a-f0-9]{64}$/)).max(24).default([]),
+}).strict().refine(body => {
+  const ids = body.memories.map(memory => memory.id);
+  return new Set(ids).size === ids.length && ids.every(id => !id.startsWith('shared:') && id !== 'clock-now');
+}, { message: 'Memory IDs must be distinct and cannot use reserved server IDs', path: ['memories'] });
+
 export const remindersSchema = z.object({
   now: isoTime,
   time_zone: timeZone,

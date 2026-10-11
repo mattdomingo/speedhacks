@@ -18,7 +18,10 @@ final class WalkthroughTests: XCTestCase {
 
         // Steph speaks first: the Priya reminder.
         app.buttons["Settings"].tap()
-        app.buttons["Show Priya reminder"].tap()
+        let demoReminder = app.buttons["Show Priya reminder"]
+        for _ in 0..<5 where !demoReminder.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(demoReminder.isHittable)
+        demoReminder.tap()
         XCTAssertTrue(app.buttons["Tell me more"].waitForExistence(timeout: 10))
         sleep(1)
         attach(app, "02-reminder")
@@ -28,7 +31,7 @@ final class WalkthroughTests: XCTestCase {
         let field = app.textFields["Type to Steph"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
-        field.typeText("Where are my keys?\n")
+        field.typeText("Hey Steph, where are my keys\n")
         XCTAssertTrue(app.buttons["Found them!"].waitForExistence(timeout: 30))
         sleep(1)
         attach(app, "03-keys")
@@ -67,6 +70,19 @@ final class WalkthroughTests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'desk drawer'")).firstMatch.exists)
         sleep(1)
         attach(app, "06-passport")
+    }
+
+    func testSettingsExplainsMemoryConnection() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-RecallInMemoryStore", "-RecallSkipOnboarding", "-demoMode", "NO"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 10))
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(app.staticTexts["Memories on this phone only"].waitForExistence(timeout: 5))
+        let code = app.secureTextFields["memory-access-code"]
+        XCTAssertTrue(code.exists)
+        XCTAssertFalse(app.buttons["Connect memories"].isEnabled)
+        attach(app, "07-memory-connection")
     }
 
     func testOnboardingScreens() {

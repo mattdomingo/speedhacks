@@ -13,19 +13,20 @@ export function createGemini(apiKey, fetchImpl = fetch, { timeoutMs = 20_000 } =
 // Same contract as askClaude: a parsed card, or null when Gemini blocks, stops early or fails.
 // The system prompt is sent verbatim; the user turn is the same askTurn/reminderTurn text.
 // Provider bodies can echo private inputs, so only statuses and finish reasons are logged.
-export async function askGemini({ apiKey, fetchImpl, timeoutMs }, model, content) {
+export async function askGemini({ apiKey, fetchImpl, timeoutMs }, model, content, { system = STEPH_SYSTEM_PROMPT, format = cardFormat, parse = parseCard, signal, maxTokens } = {}) {
   let response;
   try {
     response = await fetchImpl(`${API}/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: STEPH_SYSTEM_PROMPT }] },
+        systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: content }] }],
         generationConfig: {
           responseMimeType: 'application/json',
-          responseJsonSchema: cardFormat.schema,
+          responseJsonSchema: format.schema,
+          ...(maxTokens ? { maxOutputTokens: maxTokens } : {}),
           // A voice reply waits on this: one sentence over at most 24 supplied memories.
           thinkingConfig: { thinkingLevel: 'minimal' },
         },
@@ -59,7 +60,7 @@ export async function askGemini({ apiKey, fetchImpl, timeoutMs }, model, content
   }
   // Thought summaries (thought: true) are skipped; the answer is the last text part.
   const text = (candidate.content?.parts ?? []).filter(part => typeof part.text === 'string' && !part.thought).at(-1)?.text ?? '';
-  const card = parseCard(text);
+  const card = parse(text);
   if (!card) console.error('Gemini returned an invalid card');
   return card;
 }

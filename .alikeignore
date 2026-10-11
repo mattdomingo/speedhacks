@@ -1,4 +1,7 @@
 # Alike (https://alike.network) captures coding-agent sessions. Keep secrets and personal data out.
-input: DIAL_MCP_TOKEN|CAMERA_TOKEN|ADMIN_TOKEN|GOOGLE_CLIENT_SECRET|GOOGLE_TOKEN_KEY|DIAL_WEBHOOK_SECRET|KEEWANO_API_KEY|refresh_token|sk_live_
-path: .env
-path: data
+input: RECALL_PATIENT_TOKENS|APP_PAIRING_PATIENT|DIAL_MCP_TOKEN|CAMERA_TOKEN|ADMIN_TOKEN|GOOGLE_CLIENT_SECRET|GOOGLE_TOKEN_KEY|DIAL_WEBHOOK_SECRET|KEEWANO_API_KEY|refresh_token|sk_live_
+# Stop capture when tool input names sensitive files; these rules do not redact content.
+# `path:` only accepts absolute session paths, so relative file names must use `input:`.
+input: \.env\b
+input: (?:^|[/\\\s"'=])data(?:[/\\]|\s*$)
+input: \.app-device\b

@@ -1,8 +1,14 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { isTimeZone } from './time.mjs';
-import { E164, patientsSchema } from './voice/patients.mjs';
+import { E164, patientsFrom, patientsSchema } from './voice/patients.mjs';
 
 const secret = z.string().min(32);
+const patientTokens = z.array(z.object({
+  tokenHash: z.string().regex(/^[a-f0-9]{64}$/),
+  patient: z.string().regex(E164),
+}).strict()).max(100).refine(entries => new Set(entries.map(entry => entry.tokenHash)).size === entries.length,
+  'Each device token must have one patient binding');
 const optional = schema => z.preprocess(value => value === '' ? undefined : value, schema.optional());
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 const GOOGLE_KEYS = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI', 'GOOGLE_TOKEN_KEY', 'ADMIN_TOKEN'];
@@ -58,6 +64,15 @@ export function readConfig(env = process.env) {
     KEEWANO_DATA_DIR: optional(z.string().min(1)),
     // Steph iOS app: a shared app secret (demo restriction) gates /embed, /ask and /reminders.
     RECALL_APP_TOKEN: optional(secret),
+    // JSON array of SHA-256 token hashes mapped to known patients. Raw per-device tokens
+    // are provisioned out of band and stored in the phone Keychain, never in the app binary.
+    RECALL_PATIENT_TOKENS: optional(z.string().transform((text, ctx) => {
+      try { return patientTokens.parse(JSON.parse(text)); }
+      catch {
+        ctx.addIssue({ code: 'custom', message: 'RECALL_PATIENT_TOKENS must be an array of unique {tokenHash, patient} bindings' });
+        return z.NEVER;
+      }
+    })),
     // Backend-only provider keys; unset makes the matching Steph endpoint return 503.
     ANTHROPIC_API_KEY: optional(z.string().trim().min(1)),
     STEPH_MODEL: z.string().trim().min(1).default('claude-opus-5-5'),
@@ -94,6 +109,16 @@ export function readConfig(env = process.env) {
     config.RECALL_APP_TOKEN].filter(Boolean);
   if (new Set(secrets).size !== secrets.length) {
     throw new Error('Use separate Dial, camera, admin, webhook, cron and app secrets');
+  }
+  const patients = patientsFrom(config);
+  const serviceHashes = new Set(secrets.map(value => createHash('sha256').update(value).digest('hex')));
+  for (const binding of config.RECALL_PATIENT_TOKENS ?? []) {
+    if (!patients.some(patient => patient.number === binding.patient)) {
+      throw new Error('Each RECALL_PATIENT_TOKENS binding must name a configured patient');
+    }
+    if (serviceHashes.has(binding.tokenHash)) {
+      throw new Error('Use separate device tokens; shared app and service credentials cannot access patient memory');
+    }
   }
   // Google is all-or-nothing so a half-configured deployment fails at boot, not mid-call.
   const google = GOOGLE_KEYS.filter(key => config[key]);

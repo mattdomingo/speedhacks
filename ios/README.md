@@ -18,9 +18,13 @@ Requirements: Xcode 26 (built with 26.6), iOS 17+. The generated `Recall.xcodepr
 
 The simulator works for everything except the microphone-heavy parts and real photo/calendar data. Type to Steph instead of talking.
 
-### Backend (Claude, embeddings)
+### Connected memories
 
-Steph's brain is the existing Recall service in this repo (`backend/steph/`): `POST /embed`, `/ask` and `/reminders`. The service holds every API key and proxies Claude, so the app never contains one. See [Steph API](../README.md#steph-api-ios-app) for the contract.
+To use the same Gmail, calendar and camera evidence as Steph on the phone, follow [device pairing](../docs/ios-memory.md). Pairing is separate from the legacy app token below. Demo mode stays isolated.
+
+### Backend (Claude or Gemini, embeddings)
+
+Steph's brain is the existing Recall service in this repo (`backend/steph/`): `POST /embed`, `/ask` and `/reminders`. The service holds provider API keys and supports Claude or Gemini, so the app never contains one. See [Steph API](../README.md#steph-api-ios-app) for the contract.
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
@@ -31,7 +35,7 @@ Steph's brain is the existing Recall service in this repo (`backend/steph/`): `P
 | `EMBED_MODEL` | Backend only | Default `voyage-3.5-lite` |
 | `RECALL_API_BASE_URL` | `ios/Config/Local.xcconfig` | Default production `https://recall-kappa-nine.vercel.app`. Write `https:/$()/host` because xcconfig treats `//` as a comment. Use `http:/$()/127.0.0.1:3000` for a local backend (`npm start`) from the simulator |
 
-Production is not configured for Steph yet: set those variables in the Vercel project's Production environment and redeploy. Until then, or with no network, the app answers **on-device**. The fallback only repeats what a stored memory says, never composes new facts, and says "I'm not sure" with the closest memory when nothing matches well.
+For the legacy stateless API, set the required variables in the Vercel project's Production environment and redeploy. Until then, or with no network, the app answers **on-device**. The fallback only repeats what a stored memory says, never composes new facts, and says "I'm not sure" with the closest memory when nothing matches well.
 
 ## Demo mode (3-minute script)
 

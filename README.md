@@ -362,3 +362,7 @@ GitHub Actions runs the backend suite with SQLite and Postgres 17, plus the Pyth
 Production verification also passed public health, root 404, unauthenticated rejection, authenticated JPEG upload/retrieval, durable Neon writes, MCP discovery, and rejection of callers without an allowlisted number. Synthetic verification data was removed afterward. Real Dial calls, Google access, webcam accuracy, and clinical usefulness remain unverified.
 
 The protected preview was also checked: its authenticated observation write appeared only in the preview database, never production, and was removed afterward.
+
+### iOS shared-memory pairing
+
+The app can query the same authenticated calendar, email and camera evidence as Dial using a separate device credential. See [pairing, API and acceptance](docs/ios-memory.md). Legacy app tokens cannot read backend personal records.

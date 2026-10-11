@@ -53,24 +53,24 @@ export function parseCard(text) {
   };
 }
 
-export function createClaude(apiKey) {
-  return new Anthropic({ apiKey, timeout: 25_000, maxRetries: 1 });
+export function createClaude(apiKey, options = {}) {
+  return new Anthropic({ apiKey, timeout: 25_000, maxRetries: 1, ...options });
 }
 
 // Returns a parsed card, or null when Claude declines, is cut off, or fails upstream.
-export async function askClaude(client, model, content) {
+export async function askClaude(client, model, content, { system = STEPH_SYSTEM_PROMPT, format = cardFormat, parse = parseCard, signal, maxTokens = 4096 } = {}) {
   let response;
   try {
     response = await client.beta.messages.create({
       model,
-      max_tokens: 4096,
+      max_tokens: maxTokens,
       // Low effort: a voice reply waits on this, and the answer is one sentence over at most 24 supplied memories.
-      output_config: { effort: 'low', format: cardFormat },
+      output_config: { effort: 'low', format },
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
-      system: STEPH_SYSTEM_PROMPT,
+      system,
       messages: [{ role: 'user', content }],
-    });
+    }, signal ? { signal } : undefined);
   } catch (error) {
     // Timeouts, 5xx, 429 and connection failures all become a calm 502; nothing about the prompt is logged.
     console.error('Claude request failed:', error instanceof Anthropic.APIError ? error.status ?? error.name : error.name);
@@ -81,7 +81,7 @@ export async function askClaude(client, model, content) {
     return null;
   }
   const text = (response.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
-  const card = parseCard(text);
+  const card = parse(text);
   if (!card) console.error('Claude returned an invalid card');
   return card;
 }

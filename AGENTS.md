@@ -244,7 +244,7 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 
 ### DEC-024 — Steph's app keeps memory on the phone; the backend only answers
 
-- **Date / status / responsible:** 2026-10-11 / Accepted / iOS app owner (PR #11), with Engineer 1 for the backend routes.
+- **Date / status / responsible:** 2026-10-11 / Accepted; shared retrieval boundary amended by [DEC-028](#dec-028--pair-ios-to-existing-shared-memory-reads) / iOS app owner (PR #11), with Engineer 1 for the backend routes.
 - **Decision:** The Recall iPhone app stores memories, embeddings and the people/places graph in SwiftData, and retrieves on-device. `POST /ask`, `/reminders` and `/embed` (`backend/steph/`) are stateless and gated by `RECALL_APP_TOKEN`, and they store nothing.
   - **Model provider:** `STEPH_PROVIDER=auto` uses Claude when `ANTHROPIC_API_KEY` is set, otherwise Gemini (`gemini-3.5-flash-lite`, minimal thinking).
   - **Prompt input:** the product system prompt is sent verbatim. Memories reach the model as escaped JSON with times written in the person's zone, plus a `clock-now` memory so Steph can tell the time.
@@ -268,6 +268,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Decision:** Make `search_messages.query` optional. Omission or a generic recent-mail query retrieves up to five recent messages using the existing read-only Google adapter. Add inclusive date/end_date ranges (at most 31 days) to calendar and email tools, interpreted in the user's time zone. Recent/dated email and range-calendar requests perform bounded live lookups when connected, report failure instead of stale/partial/empty success, and retain generation/scope fencing, caller/PIN checks, configured mail limits and live-mode demo exclusion. Undated keyword searches and single-day calendar requests retain their current behavior. Historical calendar reads do not replace the synced window.
 - **Reason and consequences:** A caller who forgot the subject cannot supply search keywords, and last week's plans may be outside the synced calendar window. Steph offers recent mail and date-based recall, without inferring attendance or what someone forgot/completed. Tool descriptions provide current local relative-date boundaries. No new service, scope, storage schema or dependency is needed. The deployed Dial instruction and cached tool schema must be refreshed separately; local tool tests do not prove voice behavior.
 - **Sources / validation:** `contracts/index.mjs`, `backend/digital/index.mjs`, `backend/voice/`, `backend/test/google.test.mjs`; acceptance steps in the README Google connection section.
+
+### DEC-028 — Pair iOS to existing shared memory reads
+
+- **Date / status / responsible:** 2026-10-11 / Accepted; amends [DEC-024](#dec-024--stephs-app-keeps-memory-on-the-phone-the-backend-only-answers) / iOS and backend repair, requested by the project owner after wrong and empty app answers.
+- **Decision:** Keep phone-local storage and stateless legacy routes. Add separate `/app/session` and `/app/ask` endpoints authorized by per-device token hashes mapped to existing patients (`RECALL_PATIENT_TOKENS`), with existing PIN lockout when enabled. The app receives the raw device code privately, stores it in device-only Keychain, and uses the same patient-scoped read-only retrieval functions as Dial. A bounded, validated model plan selects up to three lookups. Return only cited shared evidence with provenance and timestamp, held transiently in the app.
+- **Reason and consequences:** App questions previously had no backend Gmail/camera access, and silent fallback disguised failures. The token embedded in old app builds is not adequate authorization for personal backend records. No new service, dependency or database migration is needed. Local notes remain local, demo data stays isolated, Google access stays primary-patient-only, and no phone-call or message writes are added. Manual provisioning/revocation is a supervised-demo limit; broader distribution requires verified sign-in and server-managed device credentials.
+- **Sources / validation:** [Pairing and acceptance](docs/ios-memory.md), `backend/steph/app-memory.mjs`, `backend/test/app-memory.test.mjs`, iOS retrieval/client regressions. Deployment and physical-device acceptance are separate from local tests.
 
 Copy this template for the next decision:
 
