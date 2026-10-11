@@ -1241,6 +1241,8 @@ test('createEvent adds a Steph-marked event; nothing can edit or delete events',
 
 test('Gmail keeps only facts: schema.org markup first, then Claude; bodies are never stored', async t => {
   assert.match(config.GMAIL_SYNC_QUERY, /^newer_than:90d -category:promotions -category:social \{.*flight.*receipt.*tracking.*appointment.*invoice.*ticket.*\}$/);
+  assert.equal(readConfig({ DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64), GMAIL_SYNC_QUERY: '' }).GMAIL_SYNC_QUERY,
+    config.GMAIL_SYNC_QUERY, 'an empty setting never means the whole mailbox');
   const memories = memorySink();
   const claudeCalls = [];
   const claude = { beta: { messages: { async create(params) {

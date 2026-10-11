@@ -45,10 +45,12 @@ export function readConfig(env = process.env) {
     // Live Google lookups happen mid-call; keep them well inside the voice agent's patience.
     GOOGLE_LIVE_TIMEOUT_MS: z.coerce.number().int().min(500).max(10_000).default(1500),
     // Fact-bearing mail only (DEC-019): travel, reservations, deliveries, receipts, appointments,
-    // bills and tickets from the last 90 days. Live mail search stays inside this query too.
-    GMAIL_SYNC_QUERY: z.string().default('newer_than:90d -category:promotions -category:social ' +
-      '{category:reservations category:purchases flight itinerary "boarding pass" reservation booking confirmation ' +
-      'hotel receipt order shipped delivery tracking package appointment invoice bill "payment due" statement ticket tickets}'),
+    // bills and tickets from the last 90 days. Live mail search stays inside this query too. Empty
+    // means the default: an empty Gmail query would match the whole mailbox.
+    GMAIL_SYNC_QUERY: z.preprocess(value => value === '' ? undefined : value, z.string().default('newer_than:90d ' +
+      '-category:promotions -category:social {category:reservations category:purchases flight itinerary "boarding pass" ' +
+      'reservation booking confirmation hotel receipt order shipped delivery tracking package appointment invoice bill ' +
+      '"payment due" statement ticket tickets}')),
     // Each message costs 20 Gmail quota units; 250 stays under 6,000 units per user per minute.
     GMAIL_SYNC_LIMIT: z.coerce.number().int().min(1).max(250).default(100),
     // Public origin of this backend for Google Calendar push notifications; defaults to the
