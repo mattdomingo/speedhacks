@@ -192,6 +192,13 @@ test('live-shaped calls (transcriptTurns null, flat transcript) still store the 
   assert.deepEqual(words, ['Hello?', 'Yes.\nI got it, thanks.']);
 });
 
+test('unintelligible-audio turns from transcriptTurns are not stored as the patient\'s words', async t => {
+  const { url, store, dial } = await fixture(t);
+  dial.calls.noisy = inboundCall('noisy', [['user', 'Where are my keys?'], ['user', '(unintelligible audio)'], ['agent', 'Hi!']]);
+  assert.equal((await deliver(url, transcribed('noisy'))).status, 200);
+  assert.deepEqual((await store.list('call')).filter(record => record.call_id === 'noisy').map(record => record.text), ['Where are my keys?']);
+});
+
 test('turnsFromText keeps multi-line turns and drops unintelligible markers', () => {
   assert.deepEqual(turnsFromText('Agent: Hi!\nUser: (unintelligible audio)\nUser: Where are my keys?\nAgent: On the counter.\nAnd your wallet.'), [
     { speaker: 'agent', text: 'Hi!' }, { speaker: 'user', text: 'Where are my keys?' },

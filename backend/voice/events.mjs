@@ -13,9 +13,12 @@ export function turnsFromText(transcript) {
     if (match) turns.push({ speaker: SPEAKERS[match[1].toLowerCase()], text: match[2] });
     else if (turns.length) turns.at(-1).text += `\n${line}`;
   }
-  return turns
-    .map(turn => ({ ...turn, text: turn.text.replace(/\(unintelligible audio\)/gi, '').trim() }))
-    .filter(turn => turn.text);
+  return turns.map(turn => ({ ...turn, text: withoutNoise(turn.text) })).filter(turn => turn.text);
+}
+
+// "(unintelligible audio)" markers appear in both transcript shapes; they are not the patient's words.
+function withoutNoise(text) {
+  return text.replace(/\(unintelligible audio\)/gi, '').trim();
 }
 
 // Side effects of verified Dial webhook events. Every write is keyed by a Dial id and inserted
@@ -51,8 +54,9 @@ export function createDialEvents(config, store, { dial = null, reminders, patien
       duration: call.duration ?? null, timestamp: new Date(started).toISOString(),
       text: `${call.direction === 'inbound' ? 'They called' : 'Steph called'} (${call.duration ?? 0} s).`, demo: false,
     });
-    const turns = Array.isArray(call.transcriptTurns) && call.transcriptTurns.length
-      ? call.transcriptTurns : turnsFromText(call.transcript);
+    const turns = (Array.isArray(call.transcriptTurns) && call.transcriptTurns.length
+      ? call.transcriptTurns : turnsFromText(call.transcript))
+      .map(turn => ({ ...turn, text: typeof turn?.text === 'string' ? withoutNoise(turn.text) : '' }));
     for (const [index, turn] of turns.entries()) {
       if (turn?.speaker !== 'user' || typeof turn.text !== 'string' || !turn.text.trim()) continue;
       await store.put({
