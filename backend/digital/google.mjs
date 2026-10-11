@@ -5,11 +5,21 @@ export const SCOPES = {
   calendar: 'https://www.googleapis.com/auth/calendar.readonly',
   gmail: 'https://www.googleapis.com/auth/gmail.readonly',
 };
-const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
-const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
-const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
+
+// Real Google unless GOOGLE_API_BASE_URL / GOOGLE_OAUTH_BASE_URL name a local same-URL mock such
+// as a Sparta World (DEC-015). config.mjs only accepts loopback hosts and refuses them on Vercel,
+// because tokens are sent wherever these point.
+export function endpoints(config = {}) {
+  const api = config.GOOGLE_API_BASE_URL?.replace(/\/+$/, '');
+  const oauth = config.GOOGLE_OAUTH_BASE_URL?.replace(/\/+$/, '');
+  return {
+    auth: oauth ? `${oauth}/o/oauth2/v2/auth` : 'https://accounts.google.com/o/oauth2/v2/auth',
+    token: oauth ? `${oauth}/token` : 'https://oauth2.googleapis.com/token',
+    revoke: oauth ? `${oauth}/revoke` : 'https://oauth2.googleapis.com/revoke',
+    calendar: `${api ?? 'https://www.googleapis.com'}/calendar/v3`,
+    gmail: `${api ?? 'https://gmail.googleapis.com'}/gmail/v1/users/me`,
+  };
+}
 
 // Synced calendar window relative to today; dates outside it are fetched live.
 const PAST_DAYS = 7;
@@ -140,6 +150,7 @@ async function mapLimit(items, limit, fn) {
 export function createGoogle({ config, store, fetch = globalThis.fetch, log = console, onSync = () => {} }) {
   const configured = Boolean(config.GOOGLE_CLIENT_ID);
   const key = configured ? Buffer.from(config.GOOGLE_TOKEN_KEY, 'hex') : undefined;
+  const { auth: AUTH_URL, token: TOKEN_URL, revoke: REVOKE_URL, calendar: CALENDAR_API, gmail: GMAIL_API } = endpoints(config);
   const calendarIds = (config.GOOGLE_CALENDAR_IDS || 'primary').split(',').map(id => id.trim()).filter(Boolean);
   const syncMinutes = config.GOOGLE_SYNC_MINUTES ?? 10;
   // Per-instance cache only; serverless instances each refresh their own access token.
