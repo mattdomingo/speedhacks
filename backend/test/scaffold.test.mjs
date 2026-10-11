@@ -13,6 +13,7 @@ import { openPostgresStore } from '../postgres.mjs';
 import { Client as PostgresClient } from 'pg';
 import { seedDemo } from '../demo.mjs';
 import { findObject } from '../physical/index.mjs';
+import { smokeObjectMemory } from '../../scripts/smoke-object-memory.mjs';
 
 const config = {
   DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64),
@@ -194,7 +195,7 @@ test('failed asynchronous writes return an error, never a successful upload', as
   assert.deepEqual(await response.json(), { error: 'Internal server error' });
 });
 
-test('real frames reach authenticated MCP with aliases, evidence photographs and freshness', async t => {
+test('frame integration reaches authenticated MCP with aliases, evidence photographs and freshness', async t => {
   const base = Date.now();
   let now = base;
   const { store, url } = await fixture(t, { DEMO_MODE: 'false', GEMINI_API_KEY: 'test-only' }, {
@@ -222,6 +223,10 @@ test('real frames reach authenticated MCP with aliases, evidence photographs and
   assert.equal(answer.evidence[0].timestamp, new Date(now).toISOString());
   assert.equal(answer.camera.status, 'live');
   assert.equal((await lookup('cellphone')).structuredContent.status, 'unknown');
+  const smoke = await smokeObjectMemory(url, config.DIAL_MCP_TOKEN, config.DEMO_CALLER_NUMBER);
+  assert.equal(smoke['my keys'].status, 'supported');
+  assert.equal(smoke.cellphone.status, 'unknown');
+  await assert.rejects(smokeObjectMemory('http://example.com', config.DIAL_MCP_TOKEN, config.DEMO_CALLER_NUMBER), /HTTPS/);
   assert.equal((await fetch(`${url}/camera/status`)).status, 401);
   assert.equal((await fetch(`${url}/camera/status`, { headers: { Authorization: `Bearer ${config.DIAL_MCP_TOKEN}` } })).status, 401);
   const evidenceUrl = `${url}/camera/evidence/${capture.frameId}`;
