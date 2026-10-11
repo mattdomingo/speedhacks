@@ -83,8 +83,10 @@ export function stephRoutes(steph, { now = Date.now } = {}) {
     const result = await auth.apple(body.identity_token, body.full_name);
     res.json({ session_token: result.session_token, user: await view(result.user) });
   }));
+  const via = z.enum(['sms', 'call']).default('sms');
   router.post('/v1/auth/phone/start', session, handle(async (req, res) => {
-    res.json(await auth.startPhone(req.user, phone.parse(req.body?.phone)));
+    const body = z.object({ phone, via }).parse(req.body);
+    res.json(await auth.startPhone(req.user, body.phone, 'self', undefined, body.via));
   }));
   router.post('/v1/auth/phone/verify', session, handle(async (req, res) => {
     const body = z.object({ phone, code: z.string().regex(/^\d{6}$/) }).parse(req.body);
@@ -92,8 +94,8 @@ export function stephRoutes(steph, { now = Date.now } = {}) {
     res.json({ user: await view(user) });
   }));
   router.post('/v1/caregiver/patient/start', session, handle(async (req, res) => {
-    const body = z.object({ phone, name: z.string().trim().min(1).max(60).optional() }).parse(req.body);
-    res.json(await auth.startPhone(req.user, body.phone, 'patient', body.name));
+    const body = z.object({ phone, name: z.string().trim().min(1).max(60).optional(), via }).parse(req.body);
+    res.json(await auth.startPhone(req.user, body.phone, 'patient', body.name, body.via));
   }));
   router.post('/v1/caregiver/patient/verify', session, handle(async (req, res) => {
     const body = z.object({ phone, code: z.string().regex(/^\d{6}$/), name: z.string().trim().min(1).max(60).optional() }).parse(req.body);

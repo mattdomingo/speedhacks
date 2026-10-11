@@ -169,7 +169,9 @@ export function createAuth({ config, store, dial, google, now = Date.now, fetch:
     },
 
     // purpose: 'self' (the signed-in person's own number) or 'patient' (a caregiver adds someone).
-    async startPhone(user, phone, purpose = 'self', name) {
+    // via: 'sms' (autofills on iPhone) or 'call', where Steph reads the code aloud — the fallback while
+    // carriers reject texts from a number without A2P/10DLC registration.
+    async startPhone(user, phone, purpose = 'self', name, via = 'sms') {
       if (!E164.test(phone ?? '')) throw new AuthError('Use a phone number in international format, like +14155550123');
       if (!dial) throw new AuthError('Texting is not configured', 503);
       if (purpose === 'patient' && user.role !== 'caregiver') throw new AuthError('Only a caregiver can add someone', 403);
@@ -179,9 +181,17 @@ export function createAuth({ config, store, dial, google, now = Date.now, fetch:
       await store.savePhoneCode(user.id, purpose, phone, codeHash(user.id, purpose, phone, code), iso(now() + PHONE_CODE_MINUTES * 60_000));
       await store.recordPhoneSend(user.id, iso(now()));
       const greeting = purpose === 'patient' && name ? `Hi ${name.trim().slice(0, 40)}, this is Steph. ` : '';
-      await dial.sendText({ to: phone, from: config.STEPH_NUMBER, body: `${greeting}Your Steph code is ${code}` });
-      log.info?.(`Sent a Steph phone code to ${maskPhone(phone)}`);
-      return { sent: true, expires_in: PHONE_CODE_MINUTES * 60 };
+      if (via === 'call') {
+        const digits = code.split('').join(', ');
+        await dial.placeCall({ to: phone, from: config.STEPH_NUMBER, maxSeconds: 90, idempotencyKey: `code-${user.id}-${now()}`,
+          instruction: ['You are Steph, an AI assistant, calling only to read a sign-in code.',
+            `Say: "Hi, this is Steph, an AI assistant. Your Steph code is ${digits}." Then say the code again, slowly, digit by digit: ${digits}.`,
+            'Offer to repeat it once more. Do not discuss anything else. Then say goodbye and end the call.'].join('\n') });
+      } else {
+        await dial.sendText({ to: phone, from: config.STEPH_NUMBER, body: `${greeting}Your Steph code is ${code}` });
+      }
+      log.info?.(`Sent a Steph phone code by ${via} to ${maskPhone(phone)}`);
+      return { sent: true, via, expires_in: PHONE_CODE_MINUTES * 60 };
     },
 
     async verifyPhone(user, phone, code, purpose = 'self', name) {

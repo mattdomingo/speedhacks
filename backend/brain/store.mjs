@@ -244,6 +244,9 @@ export function brainStore(driver) {
       return (await driver.all(`SELECT * FROM steph_timeline WHERE ${where.join(' AND ')} ORDER BY at DESC, CASE WHEN direction = 'out' THEN 1 ELSE 0 END DESC, id DESC LIMIT ?`,
         [...params, limit])).map(timelineRow);
     },
+    async timelineByRef(ref) {
+      return timelineRow(await one('SELECT * FROM steph_timeline WHERE ref = ?', [ref]));
+    },
     async timelineEntry(userId, id) {
       return timelineRow(await one('SELECT * FROM steph_timeline WHERE user_id = ? AND id = ?', [userId, id]));
     },

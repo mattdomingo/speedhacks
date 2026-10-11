@@ -26,7 +26,7 @@ The three setup screens map to these calls.
 
 ### Screen 2: What's your phone number?
 
-- `POST /v1/auth/phone/start` `{"phone":"+14155550123"}` → `{"sent":true,"expires_in":600}`. Steph texts `Your Steph code is 123456` from her Dial number. 429 after 5 sends in an hour; 503 when Dial is not configured.
+- `POST /v1/auth/phone/start` `{"phone":"+14155550123","via":"sms"|"call"}` → `{"sent":true,"via":"sms","expires_in":600}`. Steph texts `Your Steph code is 123456` from her Dial number. With `"via":"call"`, she phones and reads the code aloud instead. Offer "Call me with the code" after about 15 seconds, because US carriers reject Steph's texts until her number is 10DLC-registered. 429 after 5 sends in an hour; 503 when Dial is not configured. The caregiver's patient step takes `via` too.
 - `POST /v1/auth/phone/verify` `{"phone":"+1...","code":"123456"}` → `{"user":User}`. 400 on a wrong or expired code; 5 wrong tries invalidate the code. Use `textContentType = .oneTimeCode` and submit as soon as 6 digits arrive.
 
 This verified number is where Steph calls and texts, and how she recognizes the person when they call or text her.

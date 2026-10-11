@@ -204,17 +204,19 @@ With `CALLER_PIN` set, memory and action tools also need the PIN. `forget`, `con
 
 1. Run `npm run db:init` against that environment's database (preview first): it adds the `steph_*` tables.
 2. Set `DIAL_API_KEY`, `ANTHROPIC_API_KEY`, `CRON_SECRET`, `TIMEZONE`, `CALLER_PIN` and `DEMO_MODE=false`. Optional: `APPLE_BUNDLE_IDS` (Sign in with Apple), `APNS_KEY_ID`/`APNS_TEAM_ID`/`APNS_KEY`/`APNS_TOPIC` (push), and the Google settings for "Continue with Google" with redirect `https://…/google/callback`. Redeploy.
-3. Connect Dial's Context MCP (account-wide) and a webhook with **all three events**, using that environment's `DIAL_MCP_TOKEN`. Put the returned `whsec_…` secret in `DIAL_WEBHOOK_SECRET` and redeploy.
+3. Connect Dial's Context MCP (account-wide) and a webhook for **all events** (`["*"]`: `message.received`, `message.status_changed`, `call.ended`, `call.transcribed`), using that environment's `DIAL_MCP_TOKEN`. Put the returned `whsec_…` secret in `DIAL_WEBHOOK_SECRET` and redeploy.
 
    ```sh
    curl -X POST https://api.getdial.ai/api/v1/context-mcps -H "Authorization: Bearer $DIAL_API_KEY" -H 'Content-Type: application/json' \
      -d '{"name":"Recall","url":"https://recall-kappa-nine.vercel.app/mcp","headers":{"Authorization":"Bearer '"$DIAL_MCP_TOKEN"'"}}'
    curl -X POST https://api.getdial.ai/api/v1/webhooks -H "Authorization: Bearer $DIAL_API_KEY" -H 'Content-Type: application/json' \
-     -d '{"targetUrl":"https://recall-kappa-nine.vercel.app/webhooks/dial","eventTypes":["message.received","call.ended","call.transcribed"]}'
+     -d '{"targetUrl":"https://recall-kappa-nine.vercel.app/webhooks/dial","eventTypes":["*"]}'
    ```
 
 4. Apply the persona after any edit: `npm run persona && dial number set +12408962183 --inbound-instruction "$(cat backend/voice/instructions.txt)"`.
 5. Call once with `DIAL_LOG_HEADERS=true` to confirm the caller headers, then turn it off. Text Steph, call Steph, and tap Call me / Text me in the app. Check that each exchange appears in the timeline and the decisions in Diagnostics.
+
+**Texts need A2P/10DLC registration.** On 2026-10-11 a real text from Steph's number was rejected by the carrier ("the sender isn't registered for A2P/10DLC messaging"). Register the number in the Dial dashboard. Until then, setup codes can come by voice (`via: "call"`), and rejected texts appear in Diagnostics through `message.status_changed`.
 
 Locally, Vercel Cron does not run: trigger it with `curl -H "Authorization: Bearer $CRON_SECRET" http://127.0.0.1:3000/cron/steph`. Dial reaches a local backend only through an HTTPS tunnel.
 

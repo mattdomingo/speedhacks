@@ -95,3 +95,15 @@ test('"Remind me to call mom tomorrow" lands on Google Calendar when it is conne
   assert.match(answer.reply.text, /added 'Call mom'/);
   assert.deepEqual(f.google.created, [{ title: 'Call mom', start: '2026-10-13T17:00:00.000Z', end: '2026-10-13T17:30:00.000Z', description: undefined }]);
 });
+
+test('a text the carrier rejects shows up in Diagnostics with the reason', async t => {
+  const f = await fixture(t, { script: () => turn(reply('r1', 'Here you go.')) });
+  const { token } = await signIn(f, { phone: ADA });
+  await f.api('/v1/steph/message', { token, body: { text: 'Hello' } });
+  await f.api('/v1/steph/text-me', { token, body: {} });
+  const messageId = `msg-${f.dial.texts.length}`;
+  await postWebhook(f, { id: 'evt-st-1', type: 'message.status_changed', data: { messageId, deliveryState: 'undelivered',
+    deliveryError: "The carrier rejected the message because the sender isn't registered for A2P/10DLC messaging." } });
+  const [latest] = (await f.api('/v1/diagnostics', { token })).body.decisions;
+  assert.equal(latest.reason, "text not delivered: The carrier rejected the message because the sender isn't registered for A2P/10DLC messaging.");
+});

@@ -134,8 +134,20 @@ export function createSteph({ config, store, google, physicalOptions, dial, clau
     return true;
   }
 
+  // Carriers can reject a text after Dial accepts it (e.g. no A2P/10DLC registration): show it in Diagnostics.
+  async function onMessageStatus(event) {
+    const data = event.data ?? {};
+    if (!['undelivered', 'failed'].includes(data.deliveryState) || !data.messageId) return false;
+    const entry = await store.timelineByRef(`sms:${data.messageId}`);
+    if (!entry) return false;
+    await store.addDecision({ user_id: entry.user_id, at: iso(now()), item: 'Text delivery', channel: 'text', rule: 'delivery',
+      reason: `text not delivered: ${String(data.deliveryError ?? data.deliveryState).slice(0, 200)}`, counted: false, ref: data.messageId });
+    return true;
+  }
+
   async function onDialEvent(event) {
     if (event.type === 'message.received') return onSms(event);
+    if (event.type === 'message.status_changed') return onMessageStatus(event);
     if (event.type === 'call.transcribed') return onTranscribed(event);
     if (event.type === 'call.ended') return proactive.handleCallEnded(event);
     return false;

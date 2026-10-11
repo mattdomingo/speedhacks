@@ -57,7 +57,7 @@ test('Steph texts a six-digit code from her number; wrong codes run out and send
   const { token } = await signIn(f);
   assert.equal((await f.api('/v1/auth/phone/start', { token, body: { phone: '4155550123' } })).status, 400);
   const sent = await f.api('/v1/auth/phone/start', { token, body: { phone: ADA } });
-  assert.deepEqual(sent.body, { sent: true, expires_in: 600 });
+  assert.deepEqual(sent.body, { sent: true, via: 'sms', expires_in: 600 });
   assert.equal(f.dial.texts[0].from, '+12408962183');
   assert.match(f.dial.texts[0].body, /^Your Steph code is \d{6}$/);
   const code = f.dial.codeFor(ADA);
@@ -108,4 +108,16 @@ test('caregiver setup: the caregiver verifies themselves, then the patient\'s ph
   assert.equal(patient.body.phone, ADA);
   assert.equal((await f.store.ownerUser()).id, patient.body.id, 'household data serves the patient');
   assert.equal((await f.api('/v1/me', { token: caregiver.token })).body.patient.name, 'Mom');
+});
+
+test('the code can come by voice when texts are not getting through', async t => {
+  const f = await fixture(t);
+  const { token } = await signIn(f);
+  const sent = await f.api('/v1/auth/phone/start', { token, body: { phone: ADA, via: 'call' } });
+  assert.deepEqual(sent.body, { sent: true, via: 'call', expires_in: 600 });
+  assert.equal(f.dial.texts.length, 0);
+  const call = f.dial.calls[0];
+  assert.equal(call.to, ADA);
+  const digits = call.instruction.match(/code is ((?:\d, ){5}\d)/)[1].replaceAll(', ', '');
+  assert.equal((await f.api('/v1/auth/phone/verify', { token, body: { phone: ADA, code: digits } })).status, 200);
 });
