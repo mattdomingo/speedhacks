@@ -156,6 +156,16 @@ To enable Steph in production, set `RECALL_APP_TOKEN` (`openssl rand -hex 32`, d
 
 Run `npm run demo:medicine` for an offline terminal walkthrough using the real reminder service, a temporary SQLite database and a fake Dial client. It advances a simulated clock, shows sample call dialogue, and checks both an answered call and a missed call with one fallback text. It does not load `.env`, send anything, or write production data. The printed dialogue is scripted, not Dial-generated audio. An answered call never means medicine was taken.
 
+To receive a real reminder on your configured phone, use:
+
+```sh
+npm run demo:medicine -- --live call
+# Or send a real text:
+npm run demo:medicine -- --live text
+```
+
+Live mode loads your ignored `.env` and needs `BACKEND_URL` (the hosted origin), `DIAL_MCP_TOKEN`, `DEMO_CALLER_NUMBER` (your allowlisted E.164 number), and `CALLER_PIN` if enabled. `STEPH_NUMBER` defaults to Steph's existing line. The command schedules one fictional reminder a minute ahead through authenticated MCP; allow 1–2 minutes for the deployed reminder cron. The message says no action is needed. The backend needs Dial and cron configured as described below. An unanswered call uses the existing fallback text. Each successful run schedules a new reminder; after a timeout, check existing reminders before retrying. A scheduled result is not proof of delivery. The default command remains offline and ignores `.env`.
+
 The [iPhone demo](ios/README.md#medicine-reminder-demo) has **Show medicine reminder** and **Medicine reminder in 10 seconds** controls under Settings → Demo memories. These are separate demo flows; this does not add recurring medication schedules or adherence tracking.
 
 ## Steph's phone line and reminders
