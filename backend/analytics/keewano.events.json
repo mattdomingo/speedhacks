@@ -1,0 +1,13 @@
+{
+  "events": [
+    { "eventName": "ToolCalled", "eventValueType": "string" },
+    { "eventName": "ToolLatencyMs", "eventValueType": "uint" },
+    { "eventName": "EvidenceCount", "eventValueType": "uint" },
+    { "eventName": "NoEvidence", "eventValueType": "string" },
+    { "eventName": "ToolFailed", "eventValueType": "string" },
+    { "eventName": "EvidenceOrigin", "eventValueType": "string" },
+    { "eventName": "CallerRejected", "eventValueType": "string" },
+    { "eventName": "GoogleSync", "eventValueType": "string" },
+    { "eventName": "DialEvent", "eventValueType": "string" }
+  ]
+}

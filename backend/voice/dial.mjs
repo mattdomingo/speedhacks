@@ -1,5 +1,3 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
-
 const API = 'https://api.getdial.ai/api/v1';
 
 // Minimal REST client for the three Dial calls reminders need. Keep DIAL_API_KEY server-side.
@@ -33,13 +31,4 @@ export function createDial(apiKey, fetchImpl = fetch) {
       return (await request('POST', '/messages', { to, fromNumber: from, body })).message;
     },
   };
-}
-
-// Dial signs `${t}.${rawBody}` with the subscription secret; reject stale deliveries to limit replay.
-export function verifyDialSignature(secret, header, rawBody, now = Date.now()) {
-  const parts = Object.fromEntries((header || '').split(',').map(part => part.trim().split('=')));
-  if (!/^\d+$/.test(parts.t || '') || !/^[a-f0-9]{64}$/.test(parts.v1 || '')) return false;
-  if (Math.abs(now / 1000 - Number(parts.t)) > 300) return false;
-  const expected = createHmac('sha256', secret).update(`${parts.t}.`).update(rawBody).digest();
-  return timingSafeEqual(Buffer.from(parts.v1, 'hex'), expected);
 }

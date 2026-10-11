@@ -7,13 +7,22 @@
       "entrypoint": "server.mjs"
     }
   },
-  "crons": [
-    { "path": "/dial/dispatch", "schedule": "* * * * *" }
-  ],
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": { "service": "recall" }
+      "destination": {
+        "service": "recall"
+      }
+    }
+  ],
+  "crons": [
+    {
+      "path": "/cron/google-sync",
+      "schedule": "17 11 * * *"
+    },
+    {
+      "path": "/cron/dial-reminders",
+      "schedule": "* * * * *"
     }
   ]
 }

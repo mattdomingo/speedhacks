@@ -16,7 +16,7 @@ Recall answers phone questions using timestamped evidence. Dial handles the voic
 | Area | Responsible role | Main paths |
 | --- | --- | --- |
 | Phone and deployment | Engineer 1 | `backend/voice/`, `backend/app.mjs`, `backend/config.mjs`, `backend/index.mjs`, `backend/store.mjs`, `backend/postgres.mjs`, `backend/schema.sql`, `server.mjs`, hosting and CI configuration |
-| Digital memory | Engineer 2 | `backend/digital/` |
+| Digital memory | Engineer 2 | `backend/digital/` (including its SQLite/Postgres stores), `backend/analytics/` |
 | Physical memory | Engineer 3 | `camera/`, `backend/physical/` |
 | Shared contracts | All affected owners | `contracts/index.mjs`, callers, fixtures, tests, and integration docs |
 
@@ -131,12 +131,47 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** Engineers and agents need the same reviewable record regardless of tooling. A private chat or Alike-only decision is insufficient for a shared repository. Keep this file concise and preserve superseded decisions.
 - **Source / validation:** The request to create and push an engineering `AGENTS.md`; documentation references and diff checked in the introducing commit.
 
-### DEC-009 — Phone reminders through Dial, delivered by Vercel Cron
+### DEC-009 — Test object memory directly through MCP
 
-- **Date / status / responsible:** 2026-10-11 / Proposed (PR open) / Engineer 1; requested by the project owner.
-- **Decision:** Steph's Dial line is `+12408962183` (`STEPH_NUMBER`, Dial nickname `Steph`). Callers set, list and cancel reminders through MCP tools. Reminders persist in a `reminders` table. A per-minute Vercel Cron request to `/dial/dispatch` claims due rows under a database lease and places a Dial call with `Idempotency-Key: reminder-<id>`, or sends a text. Dial's signed `call.ended` webhook settles the outcome and sends one fallback text for a missed call; `dial_events` deduplicates deliveries. Reminder tools accept the allowlisted caller on inbound *and* outbound calls, but only when `X-Dial-Agent-Number` is Steph's line. [DEC-005](#dec-005--evidence-and-authorization-stay-explicit) is unchanged: memory retrieval stays inbound-only.
-- **Reason and consequences:** Cron plus database leases keeps delivery request-scoped, as [DEC-004](#dec-004--finish-analysis-within-the-request) requires, with no new service or dependency. Queues or Workflow would add beta infrastructure for a one-minute precision need. A per-minute cron needs a Vercel Pro team. Dial's idempotency key prevents duplicate calls on retry. Texts have no such key, so they are sent at most once and never retried. An answered call counts as delivered even when voicemail picks up. Caller ID is still not verified identity, and the store remains single-patient.
-- **Sources / validation:** `backend/voice/reminders.mjs`, `backend/voice/dial.mjs`, `backend/test/reminders.test.mjs`; local suite passed on SQLite and Postgres 16 on 2026-10-11. Production deployment, a real reminder call through the hosted backend, and SMS deliverability without 10DLC registration are unverified.
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 3; the project owner selected MCP-only testing while phone provisioning is pending.
+- **Decision:** Exercise camera uploads and `find_object` through the existing MCP smoke client, using a reserved test identity configured in both the backend and client. Keep the bearer token and inbound caller checks; no provisioned phone number or Dial account is required for this test.
+- **Reason and consequences:** Camera and memory integration can be checked before voice integration is ready. This proves neither a real call nor physical recognition accuracy; those retain their separate acceptance checks. Use live mode to exclude synthetic object evidence.
+- **Sources / validation:** [MCP-only testing and production checks](https://github.com/mattdomingo/speedhacks/pull/3), [smoke instructions](docs/object-memory.md#mcp-smoke-test), [dated validation](docs/object-memory-validation.md).
+
+### DEC-010 — Google digital memory: synced copy with in-request live fallback
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 2.
+- **Decision:** Connect one Google account through the OAuth web-server flow with PKCE and single-use state (`backend/digital/google.mjs`, `routes.mjs`), read-only `calendar.readonly` and `gmail.readonly` scopes, and an AES-256-GCM encrypted refresh token. Sync calendar (−7/+60 days) and recent mail into the shared evidence store, tagged with `origin` and a `ref` link in the payload. Tools answer from the store while the copy is fresh, and otherwise call Google inside the request under one short deadline (`GOOGLE_LIVE_TIMEOUT_MS`, 1.5 s). Vercel Cron syncs daily; long-running servers also sync on a timer. Google tables live in `backend/digital/store-{sqlite,postgres}.mjs` and `schema.sql`; the `evidence` table is unchanged.
+- **Reason and consequences:** Phone calls need fast answers, so the store is the primary source; live calls cover stale copies and uncovered dates without post-response work (DEC-004). A failed or expired lookup with nothing stored is an error, never "no plans" (DEC-005). `gmail.readonly` is the narrowest scope that allows search; both Gmail scopes are restricted, so the app stays in Google's Testing mode, where refresh tokens expire after 7 days. Live mail search is limited to `GMAIL_SYNC_QUERY`. Sparta Worlds were not wired because configurable Google endpoints would also redirect OAuth tokens.
+- **Sources / validation:** [PR #1](https://github.com/mattdomingo/speedhacks/pull/1); `backend/test/google.test.mjs` against an in-process fake Google on SQLite and Postgres. A real Google account is not yet validated.
+
+### DEC-011 — Optional caller PIN as a second factor
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineers 1 and 2.
+- **Decision:** With `CALLER_PIN` set, every memory tool also requires an optional `pin` argument (`contracts/index.mjs`), compared in constant time (`backend/voice/pin.mjs`). Five wrong attempts lock that caller number out for 15 minutes, keyed by a hash of the number in `caller_pin_failure`. The voice instructions tell the agent to ask for the PIN and never say it aloud.
+- **Reason and consequences:** Caller ID can be spoofed and Dial offers no caller verification, so once real Gmail and Calendar are connected the allowlist alone exposes them; an adversarial review rated this the one high-severity issue. The PIN is spoken and may appear in Dial transcripts. It is opt-in so existing demos keep working; set it before connecting real data. It does not replace verified identity or per-user storage (DEC-005).
+- **Sources / validation:** [PR #1](https://github.com/mattdomingo/speedhacks/pull/1); PIN lockout test in `backend/test/dial.test.mjs`.
+
+### DEC-012 — Keewano analytics without personal content
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 2.
+- **Decision:** When `KEEWANO_API_KEY` is set, report per-tool name, latency, evidence count, empty answers, evidence origin, rejected-caller reasons, sync results and Dial event types through `@keewano/node-sdk` (`backend/analytics/`). Callers are HMAC-derived UUIDs; rejected callers share one anonymous ID. Without a persistent disk, batches stay in memory and flush within about two seconds.
+- **Reason and consequences:** Sponsor tooling for product insight (which questions go unanswered) that stays off the evidence path and never blocks a call. Phone numbers, names, message text, calendar titles and object descriptions are never sent. The SDK has no flush call, so a suspended instance can lose the last seconds of events. Event IDs are positional: append to `keewano.events.json`, never reorder; CI checks the generated module.
+- **Sources / validation:** [PR #1](https://github.com/mattdomingo/speedhacks/pull/1); `backend/test/analytics.test.mjs` asserts no personal content.
+
+### DEC-013 — Signed Dial webhooks and configurable caller headers
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 1, implemented by Engineer 2.
+- **Decision:** `POST /webhooks/dial` verifies `X-Dial-Signature` (HMAC-SHA256 over `t.rawBody`, 300-second window) against `DIAL_WEBHOOK_SECRET`, reading the raw body from the request stream, stores each event once in `dial_event`, and prunes it after `DIAL_EVENT_RETENTION_DAYS` on delivery and on the daily cron. Caller and direction header names are configurable (`DIAL_CALLER_HEADER`, `DIAL_DIRECTION_HEADER`) with the scaffold's names as defaults; `DIAL_LOG_HEADERS=true` logs header names with redacted values.
+- **Reason and consequences:** Public Dial sources confirm the webhook signature scheme (from `@getdial/sdk`) but not the Context MCP caller headers, so the first real call must confirm them. Transcripts are personal data, hence the retention bound. Reading the stream keeps signatures valid both with and without Vercel's request helpers.
+- **Sources / validation:** [PR #1](https://github.com/mattdomingo/speedhacks/pull/1); `backend/test/dial.test.mjs`, including a run behind emulated Vercel request helpers. Header names remain unverified until a live call.
+
+### DEC-014 — Phone reminders through Dial, delivered by Vercel Cron
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 1; requested by the project owner, who asked for it to be merged.
+- **Decision:** Steph's Dial line is `+12408962183` (`STEPH_NUMBER`, Dial nickname `Steph`). With `DIAL_API_KEY` set, callers set, list and cancel reminders through MCP tools, stored in a `reminders` table. A per-minute Vercel Cron request to `/cron/dial-reminders` claims due rows under a database lease. It places a Dial call with `Idempotency-Key: reminder-<id>`, or sends a text. The [DEC-013](#dec-013--signed-dial-webhooks-and-configurable-caller-headers) webhook passes every verified `call.ended` to an idempotent handler that settles the reminder and sends one fallback text for a missed call. Reminder tools accept the allowlisted caller on inbound *and* outbound calls, but only when `X-Dial-Agent-Number` is Steph's line. They honor `CALLER_PIN` like memory tools. [DEC-005](#dec-005--evidence-and-authorization-stay-explicit) is unchanged: memory retrieval stays inbound-only.
+- **Reason and consequences:** Cron plus database leases keeps delivery request-scoped ([DEC-004](#dec-004--finish-analysis-within-the-request)) with no new service or dependency. A per-minute cron needs a Vercel Pro team. Dial's idempotency key prevents duplicate calls on retry, and a lost webhook is reconciled from the call's status before any fallback. Texts have no such key, so they are sent at most once and never retried. Reminder tools and handlers stay off until `DIAL_API_KEY` is set, so an environment without the new table keeps serving. An answered call counts as delivered even when voicemail picks up. Caller ID is still not verified identity, and the store remains single-patient.
+- **Sources / validation:** [PR #5](https://github.com/mattdomingo/speedhacks/pull/5); `backend/voice/reminders.mjs`, `backend/test/reminders.test.mjs`. The suite passed on SQLite and Postgres 16 locally on 2026-10-11. Production configuration, a real reminder call through the hosted backend, and SMS deliverability without 10DLC registration are unverified.
 
 Copy this template for the next decision:
 

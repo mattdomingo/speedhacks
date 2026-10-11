@@ -21,6 +21,44 @@ CREATE TABLE IF NOT EXISTS camera_snapshots (
   timestamp TEXT NOT NULL,
   jpeg BYTEA NOT NULL
 );
+-- Google connection (encrypted refresh token), OAuth handshakes, sync bookkeeping.
+CREATE TABLE IF NOT EXISTS google_connection (
+  slot INTEGER PRIMARY KEY CHECK (slot = 1),
+  email TEXT,
+  scope TEXT NOT NULL,
+  timezone TEXT,
+  refresh_token TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('connected', 'reconnect_required')),
+  connected_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS oauth_state (
+  state TEXT PRIMARY KEY,
+  verifier TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS sync_state (
+  name TEXT PRIMARY KEY,
+  last_success TIMESTAMPTZ,
+  last_attempt TIMESTAMPTZ NOT NULL,
+  last_error TEXT,
+  item_count INTEGER NOT NULL DEFAULT 0,
+  window_from TEXT,
+  window_to TEXT
+);
+-- Signed Dial webhook events (pruned after DIAL_EVENT_RETENTION_DAYS) and caller-PIN lockouts.
+CREATE TABLE IF NOT EXISTS dial_event (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  created_at TEXT,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dial_event_received ON dial_event (received_at);
+CREATE TABLE IF NOT EXISTS caller_pin_failure (
+  caller_hash TEXT PRIMARY KEY,
+  failures INTEGER NOT NULL,
+  window_start TIMESTAMPTZ NOT NULL
+);
 -- Phone reminders: timestamps are UTC ISO-8601 text so both adapters compare them the same way.
 CREATE TABLE IF NOT EXISTS reminders (
   id TEXT PRIMARY KEY,
@@ -37,9 +75,4 @@ CREATE TABLE IF NOT EXISTS reminders (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS reminders_by_status ON reminders (status, due_at);
-CREATE TABLE IF NOT EXISTS dial_events (
-  id TEXT PRIMARY KEY,
-  type TEXT NOT NULL,
-  received_at TEXT NOT NULL
-);
 COMMIT;

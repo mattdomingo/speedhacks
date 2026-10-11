@@ -1,26 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
-import { createHmac, randomUUID } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createHmac } from 'node:crypto';
 import { once } from 'node:events';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { Client as PostgresClient } from 'pg';
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
-import { openStore } from '../store.mjs';
-import { openPostgresStore } from '../postgres.mjs';
-import { ReminderError, spokenTime, zonedTime } from '../voice/reminders.mjs';
-import { verifyDialSignature } from '../voice/dial.mjs';
+import { localInstant } from '../time.mjs';
+import { spokenTime } from '../voice/reminders.mjs';
+import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
 
 const PATIENT = '+14155550123';
 const STEPH = '+12408962183';
-const config = {
+const config = readConfig({
   DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64), CRON_SECRET: 'r'.repeat(64),
-  DIAL_API_KEY: 'sk_test', DIAL_WEBHOOK_SECRET: 'whsec_test', DEMO_CALLER_NUMBER: PATIENT, DEMO_MODE: 'false',
-  STEPH_NUMBER: STEPH, PATIENT_TIME_ZONE: 'America/Los_Angeles',
-};
+  DIAL_API_KEY: 'sk_test', DIAL_WEBHOOK_SECRET: 'w'.repeat(32), DEMO_CALLER_NUMBER: PATIENT, DEMO_MODE: 'false',
+  TIMEZONE: 'America/Los_Angeles', DATABASE_URL: TEST_DATABASE_URL,
+});
+const NO_ANALYTICS = { toolCall() {}, rejected() {}, sync() {}, dialEvent() {} };
 const START = Date.parse('2026-10-11T20:00:00Z');
 
 function fakeDial() {
@@ -42,35 +38,15 @@ function fakeDial() {
 }
 
 async function fixture(t, overrides = {}) {
-  let store;
-  if (process.env.TEST_DATABASE_URL) {
-    const admin = new PostgresClient({ connectionString: process.env.TEST_DATABASE_URL, connectionTimeoutMillis: 10_000 });
-    await admin.connect();
-    const schema = `test_${randomUUID().replaceAll('-', '')}`;
-    t.after(async () => {
-      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-      await admin.end();
-    });
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    await admin.query(`SET search_path TO ${schema}`);
-    await admin.query(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
-    const databaseUrl = new URL(process.env.TEST_DATABASE_URL);
-    databaseUrl.searchParams.set('options', `-c search_path=${schema}`);
-    store = openPostgresStore(databaseUrl.toString());
-  } else {
-    const dir = mkdtempSync(join(tmpdir(), 'speedhacks-reminders-'));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
-    store = openStore(dir);
-  }
+  const store = await testStore(t);
   const clock = { now: START };
   const dial = fakeDial();
-  const server = createApp({ ...config, ...overrides }, store, undefined, { dial, now: () => clock.now })
-    .listen(0, '127.0.0.1');
+  const server = createApp({ ...config, ...overrides }, store, undefined,
+    { dial, now: () => clock.now, analytics: NO_ANALYTICS }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    await store.close();
   });
   return { store, dial, clock, url: `http://127.0.0.1:${server.address().port}` };
 }
@@ -87,14 +63,14 @@ async function connect(t, url, headers) {
 const onCall = (direction = 'inbound') => ({
   'X-Dial-User-Number': PATIENT, 'X-Dial-Direction': direction, 'X-Dial-Agent-Number': STEPH,
 });
-const dispatch = url => fetch(`${url}/dial/dispatch`, { headers: { Authorization: `Bearer ${config.CRON_SECRET}` } });
+const dispatch = url => fetch(`${url}/cron/dial-reminders`, { headers: { Authorization: `Bearer ${config.CRON_SECRET}` } });
 
-function webhook(url, event, { id = event.id, secret = config.DIAL_WEBHOOK_SECRET, t = Math.floor(Date.now() / 1000) } = {}) {
+function webhook(url, event, { secret = config.DIAL_WEBHOOK_SECRET, t = Math.floor(Date.now() / 1000) } = {}) {
   const body = JSON.stringify(event);
   const v1 = createHmac('sha256', secret).update(`${t}.${body}`).digest('hex');
-  return fetch(`${url}/dial/webhook`, {
+  return fetch(`${url}/webhooks/dial`, {
     method: 'POST', body,
-    headers: { 'Content-Type': 'application/json', 'X-Dial-Event-ID': id, 'X-Dial-Signature': `t=${t},v1=${v1}` },
+    headers: { 'Content-Type': 'application/json', 'X-Dial-Event-ID': event.id, 'X-Dial-Signature': `t=${t},v1=${v1}` },
   });
 }
 const ended = (callId, status, id = `evt-${callId}-${status}`) => ({
@@ -103,18 +79,18 @@ const ended = (callId, status, id = `evt-${callId}-${status}`) => ({
 
 test('local reminder times convert through daylight saving and reject impossible dates', () => {
   const zone = 'America/Los_Angeles';
-  assert.equal(new Date(zonedTime('2026-10-11T15:00', zone)).toISOString(), '2026-10-11T22:00:00.000Z');
-  assert.equal(new Date(zonedTime('2026-01-15T09:00', zone)).toISOString(), '2026-01-15T17:00:00.000Z');
-  assert.throws(() => zonedTime('2026-02-30T10:00', zone), ReminderError);
+  assert.equal(localInstant('2026-10-11T15:00', zone).toISOString(), '2026-10-11T22:00:00.000Z');
+  assert.equal(localInstant('2026-01-15T09:00', zone).toISOString(), '2026-01-15T17:00:00.000Z');
+  assert.equal(localInstant('2026-03-08T03:30', zone).toISOString(), '2026-03-08T10:30:00.000Z');
+  assert.equal(localInstant('2026-02-30T10:00', zone), null);
   assert.equal(spokenTime(Date.parse('2026-10-11T22:05:00Z'), zone), 'Sunday, October 11 at 3:05 PM');
 });
 
-test('configuration defaults to Steph\'s line and keeps the cron secret separate', () => {
-  const base = { DIAL_MCP_TOKEN: config.DIAL_MCP_TOKEN, CAMERA_TOKEN: config.CAMERA_TOKEN };
-  assert.equal(readConfig(base).STEPH_NUMBER, STEPH);
-  assert.equal(readConfig(base).PATIENT_TIME_ZONE, 'America/Los_Angeles');
-  assert.throws(() => readConfig({ ...base, CRON_SECRET: config.CAMERA_TOKEN }), /cron secret/);
-  assert.throws(() => readConfig({ ...base, PATIENT_TIME_ZONE: 'Mars/Olympus' }));
+test('configuration defaults to Steph\'s line and keeps reminders off without a Dial key', () => {
+  const base = readConfig({ DIAL_MCP_TOKEN: config.DIAL_MCP_TOKEN, CAMERA_TOKEN: config.CAMERA_TOKEN, DIAL_API_KEY: '' });
+  assert.equal(base.STEPH_NUMBER, STEPH);
+  assert.equal(base.DIAL_API_KEY, undefined);
+  assert.throws(() => readConfig({ ...config, STEPH_NUMBER: '2408962183' }));
 });
 
 test('the caller sets, lists and cancels their own reminders by phone', async t => {
@@ -139,7 +115,7 @@ test('the caller sets, lists and cancels their own reminders by phone', async t 
   assert.equal((await client.callTool({ name: 'list_reminders', arguments: {} })).structuredContent.evidence.length, 1);
 });
 
-test('reminder requests that cannot be honored come back as spoken errors', async t => {
+test('reminder requests that cannot be honored come back as spoken errors; reminders stay off without Dial', async t => {
   const { url } = await fixture(t);
   const client = await connect(t, url, onCall());
   for (const args of [
@@ -152,10 +128,12 @@ test('reminder requests that cannot be honored come back as spoken errors', asyn
     assert.equal(reply.isError, true, JSON.stringify(args));
     assert.doesNotMatch(reply.content[0].text, /Internal|Error:/);
   }
-  const { url: offUrl } = await fixture(t, { DIAL_API_KEY: '' });
+  const { url: offUrl, store } = await fixture(t, { DIAL_API_KEY: undefined });
   const off = await connect(t, offUrl, onCall());
-  const reply = await off.callTool({ name: 'set_reminder', arguments: { text: 'x', in_minutes: 5 } });
-  assert.match(reply.content[0].text, /not switched on/);
+  assert.deepEqual((await off.listTools()).tools.map(tool => tool.name), ['get_schedule', 'search_messages', 'find_object']);
+  // Without Dial, webhooks never read the reminders table, which may not exist yet.
+  store.reminderByCall = () => { throw new Error('reminders table read'); };
+  assert.equal((await webhook(offUrl, ended('call-x', 'completed'))).status, 200);
 });
 
 test('reminder tools need the allowlisted caller on Steph\'s line; memories stay inbound-only', async t => {
@@ -176,8 +154,8 @@ test('reminder tools need the allowlisted caller on Steph\'s line; memories stay
 
 test('dispatch is cron-authenticated and calls once per due reminder', async t => {
   const { url, dial, clock, store } = await fixture(t);
-  assert.equal((await fetch(`${url}/dial/dispatch`)).status, 401);
-  assert.equal((await fetch(`${url}/dial/dispatch`, { headers: { Authorization: `Bearer ${config.DIAL_MCP_TOKEN}` } })).status, 401);
+  assert.equal((await fetch(`${url}/cron/dial-reminders`)).status, 401);
+  assert.equal((await fetch(`${url}/cron/dial-reminders`, { headers: { Authorization: `Bearer ${config.DIAL_MCP_TOKEN}` } })).status, 401);
   const client = await connect(t, url, onCall());
   await client.callTool({ name: 'set_reminder', arguments: { text: 'Take the <b>blue</b> pill', in_minutes: 5 } });
   assert.deepEqual(await (await dispatch(url)).json(), { called: 0, texted: 0, failed: 0, settled: 0 });
@@ -192,8 +170,9 @@ test('dispatch is cron-authenticated and calls once per due reminder', async t =
   assert.match(call.instruction, /<reminder>Take the bblue\/b pill<\/reminder>/);
   assert.match(call.instruction, /AI assistant/);
   assert.equal((await store.reminderByCall('call-1')).status, 'calling');
-  const { url: offUrl } = await fixture(t, { CRON_SECRET: '' });
-  assert.equal((await dispatch(offUrl)).status, 503);
+  for (const off of [{ CRON_SECRET: undefined }, { DIAL_API_KEY: undefined }]) {
+    assert.equal((await dispatch((await fixture(t, off)).url)).status, 503);
+  }
 });
 
 test('signed call outcomes settle reminders once and text after a missed call', async t => {
@@ -205,8 +184,8 @@ test('signed call outcomes settle reminders once and text after a missed call', 
   await dispatch(url);
   assert.equal((await webhook(url, ended('call-1', 'no-answer'), { secret: 'wrong' })).status, 401);
   assert.equal((await webhook(url, ended('call-1', 'no-answer'), { t: Math.floor(Date.now() / 1000) - 600 })).status, 401);
-  assert.deepEqual(await (await webhook(url, ended('call-1', 'no-answer'))).json(), { ok: true });
-  assert.deepEqual(await (await webhook(url, ended('call-1', 'no-answer'))).json(), { ok: true, duplicate: true });
+  assert.deepEqual(await (await webhook(url, ended('call-1', 'no-answer'))).json(), { received: true, duplicate: false });
+  assert.deepEqual(await (await webhook(url, ended('call-1', 'no-answer'))).json(), { received: true, duplicate: true });
   assert.equal((await webhook(url, ended('call-1', 'no-answer', 'evt-redelivered'))).status, 200);
   assert.equal(dial.texts.length, 1);
   assert.equal(dial.texts[0].to, PATIENT);
@@ -218,17 +197,6 @@ test('signed call outcomes settle reminders once and text after a missed call', 
   assert.equal((await store.reminderByCall('call-2')).status, 'delivered');
   assert.equal(dial.texts.length, 1);
   assert.equal((await webhook(url, { id: 'evt-ping', type: 'webhook.ping', data: {} })).status, 200);
-});
-
-test('webhook signatures cover the exact bytes and a fresh timestamp', () => {
-  const body = Buffer.from('{"id":"evt"}');
-  const t = 1_800_000_000;
-  const v1 = createHmac('sha256', 'secret').update(`${t}.`).update(body).digest('hex');
-  assert.equal(verifyDialSignature('secret', `t=${t},v1=${v1}`, body, t * 1000), true);
-  assert.equal(verifyDialSignature('secret', `t=${t},v1=${v1}`, Buffer.from('{"id":"evt" }'), t * 1000), false);
-  assert.equal(verifyDialSignature('secret', `t=${t},v1=${v1}`, body, (t + 301) * 1000), false);
-  assert.equal(verifyDialSignature('secret', 'garbage', body, t * 1000), false);
-  assert.equal(verifyDialSignature('secret', undefined, body, t * 1000), false);
 });
 
 test('text reminders send once and are never retried after a failure', async t => {

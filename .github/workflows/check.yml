@@ -28,6 +28,7 @@ jobs:
           python-version: '3.12'
       - run: npm ci
       - run: npm test
+      - run: npm run keewano:codegen -- --check
       - run: npm test
         env:
           TEST_DATABASE_URL: postgres://test:test@127.0.0.1:5432/speedhacks_test

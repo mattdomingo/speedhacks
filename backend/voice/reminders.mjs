@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { memoryResult } from '../../contracts/index.mjs';
+import { localDate, localInstant } from '../time.mjs';
 
 const LEASE_MS = 2 * 60_000;
 const SETTLE_AFTER_MS = 10 * 60_000;
@@ -12,23 +13,6 @@ const CALL_SECONDS = 180;
 export class ReminderError extends Error {}
 
 const iso = ms => new Date(ms).toISOString();
-
-function wallClock(ms, timeZone) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
-    timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  }).formatToParts(ms).filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]));
-  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
-}
-
-// Converts local wall-clock "YYYY-MM-DDTHH:MM" in timeZone to epoch milliseconds.
-export function zonedTime(local, timeZone) {
-  const target = Date.parse(`${local}:00Z`);
-  if (!Number.isFinite(target) || iso(target).slice(0, 16) !== local) throw new ReminderError('That date is not valid.');
-  let utc = target;
-  for (let i = 0; i < 2; i++) utc = target - (wallClock(utc, timeZone) - utc);
-  return utc;
-}
 
 export function spokenTime(ms, timeZone) {
   return new Intl.DateTimeFormat('en-US', {
@@ -57,8 +41,8 @@ function view(reminder, timeZone) {
   };
 }
 
-export function createReminders(config, store, { dial = null, now = Date.now } = {}) {
-  const timeZone = config.PATIENT_TIME_ZONE;
+// timeZone() resolves the person's IANA zone (TIMEZONE, else the Google calendar's, else UTC).
+export function createReminders(config, store, { dial = null, now = Date.now, timeZone = async () => 'UTC' } = {}) {
   const from = config.STEPH_NUMBER;
 
   function requireDial() {
@@ -90,10 +74,12 @@ export function createReminders(config, store, { dial = null, now = Date.now } =
   return {
     ready: Boolean(dial),
 
-    whatsToday() {
+    async whatsToday() {
       const ms = now();
-      const local = iso(wallClock(ms, timeZone));
-      return { now: spokenTime(ms, timeZone), date: local.slice(0, 10), time: local.slice(11, 16), time_zone: timeZone };
+      const zone = await timeZone();
+      const time = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+        .format(new Date(ms));
+      return { now: spokenTime(ms, zone), date: localDate(ms, zone), time, time_zone: zone };
     },
 
     async set(patientNumber, { text, at, in_minutes, channel }) {
@@ -101,8 +87,11 @@ export function createReminders(config, store, { dial = null, now = Date.now } =
       if ((at === undefined) === (in_minutes === undefined)) {
         throw new ReminderError('Give either a clock time or a number of minutes from now, not both.');
       }
+      const zone = await timeZone();
       const created = now();
-      const due = at === undefined ? created + in_minutes * 60_000 : zonedTime(at, timeZone);
+      const instant = at === undefined ? new Date(created + in_minutes * 60_000) : localInstant(at, zone);
+      if (!instant) throw new ReminderError('That date does not exist. Ask for another day.');
+      const due = instant.getTime();
       if (due < created + 30_000) throw new ReminderError('That time has already passed. Ask for a later time.');
       if (due > created + MAX_AHEAD_MS) throw new ReminderError('I can only set reminders up to 30 days ahead.');
       const reminder = {
@@ -110,16 +99,17 @@ export function createReminders(config, store, { dial = null, now = Date.now } =
         due_at: iso(due), created_at: iso(created),
       };
       await store.createReminder(reminder);
-      return { status: 'scheduled', reminder: view(reminder, timeZone), now: spokenTime(created, timeZone) };
+      return { status: 'scheduled', reminder: view(reminder, zone), now: spokenTime(created, zone) };
     },
 
     async list(patientNumber) {
+      const zone = await timeZone();
       const reminders = await store.upcomingReminders(patientNumber);
       return {
         ...memoryResult(reminders.map(reminder => ({
-          ...view(reminder, timeZone), source: 'reminder', timestamp: reminder.due_at, demo: false,
+          ...view(reminder, zone), source: 'reminder', timestamp: reminder.due_at, demo: false,
         }))),
-        now: spokenTime(now(), timeZone),
+        now: spokenTime(now(), zone),
       };
     },
 
@@ -130,9 +120,10 @@ export function createReminders(config, store, { dial = null, now = Date.now } =
       return { status: 'canceled', id };
     },
 
-    // Called every minute by Vercel Cron. Each claim holds a database lease, so overlapping runs never double-send.
+    // Called every minute by Vercel Cron (/cron/dial-reminders). Each claim holds a database lease, so overlapping runs never double-send.
     async dispatch() {
       requireDial();
+      const zone = await timeZone();
       const result = { called: 0, texted: 0, failed: 0, settled: 0 };
       for (const reminder of await store.claimDueReminders(iso(now()), iso(now() + LEASE_MS))) {
         try {
@@ -142,7 +133,7 @@ export function createReminders(config, store, { dial = null, now = Date.now } =
             result.texted++;
           } else {
             const call = await dial.placeCall({
-              to: reminder.patient_number, from, instruction: callInstruction(reminder, timeZone),
+              to: reminder.patient_number, from, instruction: callInstruction(reminder, zone),
               idempotencyKey: `reminder-${reminder.id}`, maxSeconds: CALL_SECONDS,
             });
             await store.updateReminder(reminder.id, 'sending', { status: 'calling', call_id: call.id }, iso(now()));
@@ -172,7 +163,7 @@ export function createReminders(config, store, { dial = null, now = Date.now } =
     },
 
     async handleEvent(event) {
-      if (event.type !== 'call.ended' || !event.data?.callId) return false;
+      if (!dial || event.type !== 'call.ended' || !event.data?.callId) return false;
       const reminder = await store.reminderByCall(event.data.callId);
       if (!reminder || reminder.status !== 'calling') return false;
       return settleCall(reminder, event.data.status);
