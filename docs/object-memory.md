@@ -26,6 +26,8 @@ The backend uses native fetch with inline JPEGs and `store:false` on Gemini's In
 
 Keep the existing MCP authentication and inbound caller headers. `find_object({object})` accepts aliases including `my keys`, `keyring`, `cellphone`, and `mobile phone`. `status` remains `supported` or `unknown`; `camera` is additive. Always speak the evidence timestamp, even when camera analysis is recent. Fresh camera analysis can coexist with an old sighting of an object now hidden.
 
+For keys, wallets, and phones, answer with one short sentence using the latest supported sighting: “I last saw your keys beside the mug at 12:42.” Then stop; omit preambles, search advice, reassurance, and follow-up questions unless requested. Use the caller's local time when known and include the date for older sightings. If camera analysis is stale or unavailable, add only “I can't confirm a newer sighting.” No evidence means “I don't have a record of where I last saw your keys”; a failed lookup means “I can't check where your keys were last seen right now.” Keep authorization and sample-data disclosures. Apply the corresponding object instructions to the existing Dial persona after editing; a backend deployment alone does not update Dial.
+
 Illustrative supported response (camera metadata abbreviated):
 
 ```json
