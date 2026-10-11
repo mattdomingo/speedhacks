@@ -32,12 +32,16 @@ async function result(evidence, google, context) {
   return memoryResult(evidence);
 }
 
+async function records(store, source, includeDemo) {
+  return (await store.list(source)).filter(item => includeDemo || !item.demo);
+}
+
 // Engineer 2: Google records are synced into the store; uncovered dates are fetched live.
-export async function getSchedule(store, date, google) {
+export async function getSchedule(store, date, google, { includeDemo = false } = {}) {
   const context = google ? await google.snapshot('calendar') : undefined;
   const calendar = context?.state ?? 'absent';
   // An expired connection with nothing stored for the date cannot answer "no plans".
-  if (calendar === 'reconnect_required' && !(await store.list('calendar')).some(item => overlaps(item, date))) {
+  if (calendar === 'reconnect_required' && !(await records(store, 'calendar', includeDemo)).some(item => overlaps(item, date))) {
     throw unavailable('Calendar');
   }
   if (calendar === 'connected') {
@@ -48,20 +52,20 @@ export async function getSchedule(store, date, google) {
         await google.assertCurrent(context);
         console.error(`Live calendar lookup failed: ${error.message}`);
         // An empty answer would wrongly claim "no plans"; report the failure instead.
-        if (!(await store.list('calendar')).some(item => overlaps(item, date))) throw unavailable('Calendar');
+        if (!(await records(store, 'calendar', includeDemo)).some(item => overlaps(item, date))) throw unavailable('Calendar');
       }
     }
   }
-  return result((await store.list('calendar'))
+  return result((await records(store, 'calendar', includeDemo))
     .filter(item => overlaps(item, date) && (calendar !== 'absent' || item.origin !== 'google-calendar'))
     .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), google, context);
 }
 
 // Scores sender, subject and snippet only (not generated boilerplate such as dates), and
 // needs at least half the terms so one common word cannot claim a match.
-async function rank(store, query, includeGoogle) {
+async function rank(store, query, includeGoogle, includeDemo) {
   const needed = Math.ceil(query.length / 2);
-  return (await store.list('email'))
+  return (await records(store, 'email', includeDemo))
     .filter(item => includeGoogle || item.origin !== 'google-gmail')
     .map(item => {
       const haystack = words(item.snippet === undefined ? item.text
@@ -74,12 +78,12 @@ async function rank(store, query, includeGoogle) {
     .map(({ item }) => item);
 }
 
-export async function searchMessages(store, text, google) {
+export async function searchMessages(store, text, google, { includeDemo = false } = {}) {
   const query = terms(text);
   if (!query.length) return memoryResult([]);
   const context = google ? await google.snapshot('gmail') : undefined;
   const gmail = context?.state ?? 'absent';
-  const local = await rank(store, query, gmail !== 'absent');
+  const local = await rank(store, query, gmail !== 'absent', includeDemo);
   if (gmail === 'reconnect_required' && !local.length) throw unavailable('Email');
   if (gmail !== 'connected') return result(local, google, context);
   // A fresh copy answers directly; a stale one (or a miss) asks Gmail within this request.
