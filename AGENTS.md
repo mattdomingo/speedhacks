@@ -131,6 +131,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** Engineers and agents need the same reviewable record regardless of tooling. A private chat or Alike-only decision is insufficient for a shared repository. Keep this file concise and preserve superseded decisions.
 - **Source / validation:** The request to create and push an engineering `AGENTS.md`; documentation references and diff checked in the introducing commit.
 
+### DEC-009 — Phone reminders through Dial, delivered by Vercel Cron
+
+- **Date / status / responsible:** 2026-10-11 / Proposed (PR open) / Engineer 1; requested by the project owner.
+- **Decision:** Steph's Dial line is `+12408962183` (`STEPH_NUMBER`, Dial nickname `Steph`). Callers set, list and cancel reminders through MCP tools. Reminders persist in a `reminders` table. A per-minute Vercel Cron request to `/dial/dispatch` claims due rows under a database lease and places a Dial call with `Idempotency-Key: reminder-<id>`, or sends a text. Dial's signed `call.ended` webhook settles the outcome and sends one fallback text for a missed call; `dial_events` deduplicates deliveries. Reminder tools accept the allowlisted caller on inbound *and* outbound calls, but only when `X-Dial-Agent-Number` is Steph's line. [DEC-005](#dec-005--evidence-and-authorization-stay-explicit) is unchanged: memory retrieval stays inbound-only.
+- **Reason and consequences:** Cron plus database leases keeps delivery request-scoped, as [DEC-004](#dec-004--finish-analysis-within-the-request) requires, with no new service or dependency. Queues or Workflow would add beta infrastructure for a one-minute precision need. A per-minute cron needs a Vercel Pro team. Dial's idempotency key prevents duplicate calls on retry. Texts have no such key, so they are sent at most once and never retried. An answered call counts as delivered even when voicemail picks up. Caller ID is still not verified identity, and the store remains single-patient.
+- **Sources / validation:** `backend/voice/reminders.mjs`, `backend/voice/dial.mjs`, `backend/test/reminders.test.mjs`; local suite passed on SQLite and Postgres 16 on 2026-10-11. Production deployment, a real reminder call through the hosted backend, and SMS deliverability without 10DLC registration are unverified.
+
 Copy this template for the next decision:
 
 ```markdown

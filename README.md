@@ -66,6 +66,11 @@ Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch 
 | `get_schedule({date})` | Authorized inbound demo caller | Plans for an explicit `YYYY-MM-DD` date |
 | `search_messages({query})` | Authorized inbound demo caller | Search fixture emails |
 | `find_object({object})` | Authorized inbound demo caller | Latest matching observation by capture time |
+| `whats_today()` | Demo caller on Steph's line, inbound or outbound | Local date and time in `PATIENT_TIME_ZONE` |
+| `set_reminder({text, in_minutes \| at, channel?})` | Demo caller on Steph's line, inbound or outbound | Schedule a call (default) or text; `at` is local `YYYY-MM-DDTHH:MM` |
+| `list_reminders()` / `cancel_reminder({id})` | Demo caller on Steph's line, inbound or outbound | The caller's upcoming reminders, soonest first |
+| `GET /dial/dispatch` | `Bearer CRON_SECRET` | Vercel Cron, every minute: deliver due reminders and reconcile unsettled calls |
+| `POST /dial/webhook` | Dial `X-Dial-Signature` | `call.ended` outcomes; deduplicated on `X-Dial-Event-ID` |
 | `POST /camera/frame` | `Bearer CAMERA_TOKEN` | Store latest JPEG, at most 500 KB; return frame ID and actual inference status |
 | `GET /camera/frame` | `Bearer CAMERA_TOKEN` | Retrieve latest JPEG with `X-Captured-At` |
 | `GET /camera/status` | `Bearer CAMERA_TOKEN` | Capture/analysis freshness, processing errors, latency, token usage |
@@ -86,20 +91,44 @@ Frame bodies still contain `timestamp` and `jpegBase64`. Upload acceptance does 
 
 Memory tools return `{"status":"supported","evidence":[...]}` or `{"status":"unknown","evidence":[]}`. Each evidence record has an ID, source, text, timestamp, and demo flag. Unauthorized/failed tools return errors, not proof that nothing happened. Calendar plans do not prove attendance; camera observations are last-seen locations.
 
-## Dial connection: follow-up work
+## Steph's phone line and reminders
 
-1. Verify the production [health endpoint](https://recall-kappa-nine.vercel.app/health), or use a development HTTPS tunnel when testing a local backend.
-2. In Dial Context MCP settings, add `https://recall-kappa-nine.vercel.app/mcp` with static header `Authorization: Bearer YOUR_DIAL_MCP_TOKEN`.
-3. Configure the number's inbound instruction with `backend/voice/instructions.txt`.
-4. Set `DEMO_CALLER_NUMBER`, then call from that number.
+Steph's Dial number is **+1 240 896 2183** (Dial nickname `Steph`, default `STEPH_NUMBER`). Its inbound instruction is `backend/voice/instructions.txt`. Calling it reaches Steph; reminder calls and texts come from it.
 
-Dial supplies `X-Dial-User-Number` and `X-Dial-Direction` during calls. The backend checks the configured caller and inbound direction. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller.
+A caller asks, "Remind me in ten minutes to take the laundry out" or "Remind me tomorrow at 9 to call Sarah." Steph calls `whats_today` for clock times, then `set_reminder`, and reads back the spoken time. The reminder is stored in the database. Every minute Vercel Cron calls `/dial/dispatch`, which claims due reminders under a two-minute database lease and phones the caller from Steph's line, or texts them for `channel: "text"`. On the reminder call, the same person can ask to be reminded again.
+
+- **Outcome:** Dial's signed `call.ended` webhook marks an answered call `delivered`. A busy, unanswered, failed or cancelled call becomes `missed` and gets one fallback text. A transition is a conditional update, so duplicate or concurrent deliveries cannot send a second text.
+- **Retries:** call placement uses the Dial `Idempotency-Key` `reminder-<id>`, so a retried claim returns the original call instead of dialing again. Transient errors retry for up to 3 attempts; a 4xx (for example 402, no credit) fails at once. Texts have no idempotency key and are never retried.
+- **Lost webhooks:** a reminder still `calling` after 10 minutes is settled from `GET /calls/{id}` only once Dial reports the call terminated.
+- `shortcut:` an answered call counts as delivered even if voicemail picked up; add transcript checks if that matters. Calls are capped at 180 s while the Dial account is on its free tier (300 s maximum, 2 concurrent calls).
+
+### Connect production (Engineer 1)
+
+1. Set these Production variables in Vercel: `DIAL_API_KEY`, `CRON_SECRET` (`openssl rand -hex 32`), `DEMO_CALLER_NUMBER` (the consented caller's number, never committed), `DEMO_MODE=false`, and `PATIENT_TIME_ZONE` if not Pacific.
+2. Apply `backend/schema.sql` to the production database with `npm run db:init` before merging. It adds the `reminders` and `dial_events` tables and preserves existing data.
+3. Merge to deploy. A per-minute cron needs a Vercel Pro team; on Hobby the deployment is rejected, so check the preview build first.
+4. Connect Dial's Context MCP (account-wide) and the webhook. Use the production `DIAL_MCP_TOKEN`:
+
+   ```sh
+   curl -X POST https://api.getdial.ai/api/v1/context-mcps -H "Authorization: Bearer $DIAL_API_KEY" -H 'Content-Type: application/json' \
+     -d '{"name":"Recall","url":"https://recall-kappa-nine.vercel.app/mcp","headers":{"Authorization":"Bearer '"$DIAL_MCP_TOKEN"'"}}'
+   curl -X POST https://api.getdial.ai/api/v1/webhooks -H "Authorization: Bearer $DIAL_API_KEY" -H 'Content-Type: application/json' \
+     -d '{"targetUrl":"https://recall-kappa-nine.vercel.app/dial/webhook","eventTypes":["call.ended"]}'
+   ```
+
+   Put the returned `whsec_…` secret in `DIAL_WEBHOOK_SECRET` and redeploy.
+5. Re-apply the persona after editing it: `dial number set +12408962183 --inbound-instruction "$(cat backend/voice/instructions.txt)"`.
+6. Call Steph from the allowlisted phone, ask for a reminder in two minutes, and hang up. Check that the reminder call arrives, then that an unanswered call produces a text.
+
+Locally, Vercel Cron does not run. Trigger delivery yourself with `curl -H "Authorization: Bearer $CRON_SECRET" http://127.0.0.1:3000/dial/dispatch`. Dial reaches a local backend only through an HTTPS tunnel.
+
+Dial supplies `X-Dial-User-Number`, `X-Dial-Direction` and `X-Dial-Agent-Number` during calls. Memory tools require the configured caller on an inbound call. Reminder tools also allow outbound reminder calls to that caller, but only from `STEPH_NUMBER`. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller.
 
 Vercel Deployment Protection must allow Dial and the laptop uploader to reach the deployment. Their application bearer tokens do not bypass Vercel's login protection. Use the project's production domain with the intended access settings when connecting these external clients.
 
 **The caller-number allowlist is a demo restriction, not verified identity.** Before real personal records, add caller verification, user-scoped storage and credentials, consent, and retention controls. The store is single-user. Keep the bearer secrets server-side.
 
-Reference: [Dial Context MCP documentation](https://docs.getdial.ai/documentation/platform/context-mcp). This scaffold does not create phone resources or place calls.
+Reference: [Context MCP](https://docs.getdial.ai/documentation/platform/context-mcp), [webhooks](https://docs.getdial.ai/documentation/platform/webhooks), [placing calls](https://docs.getdial.ai/api-reference/rest-api/calls/make-call). The backend places reminder calls and texts; it does not create phone numbers. US SMS from a number without carrier (10DLC) registration may be filtered, so treat the fallback text as best-effort.
 
 ## Camera process
 
@@ -171,6 +200,11 @@ To recreate this infrastructure in a different Vercel project:
 | `VISION_MODEL` | Backend only | Defaults to `gemini-3.8-flash` |
 | `DEMO_CALLER_NUMBER` | Backend | Consented caller in E.164 format; empty means no caller can retrieve evidence |
 | `DEMO_MODE` | Backend | `true` seeds synthetic records; defaults to `false` if omitted |
+| `STEPH_NUMBER` | Backend | Steph's Dial line; defaults to `+12408962183` |
+| `DIAL_API_KEY` | Backend only | Dial `sk_live_` key; empty turns reminders off |
+| `DIAL_WEBHOOK_SECRET` | Backend only | Signing secret of the `call.ended` webhook subscription; empty returns 503 |
+| `CRON_SECRET` | Backend (Vercel Cron) | At least 32 characters, distinct from the other tokens; empty returns 503 from `/dial/dispatch` |
+| `PATIENT_TIME_ZONE` | Backend | IANA zone for spoken and local reminder times; defaults to `America/Los_Angeles` |
 | `BACKEND_URL` | Laptop only | Public backend origin, e.g. `https://YOUR_PROJECT.vercel.app`; local default follows `PORT` |
 | `DATA_DIR` | Local SQLite only | Database directory; default `./data`; ignored when `DATABASE_URL` is set |
 | `PORT` | Local server/Compose | Default `3000`; Vercel manages its service port |

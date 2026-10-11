@@ -2,6 +2,8 @@ import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { frameSchema, observationSchema } from '../contracts/index.mjs';
 import { handleMcp } from './voice/mcp.mjs';
+import { createDial, verifyDialSignature } from './voice/dial.mjs';
+import { createReminders } from './voice/reminders.mjs';
 import { createPhysicalMemory } from './physical/pipeline.mjs';
 import { frameId } from './physical/state.mjs';
 
@@ -24,25 +26,57 @@ function validateTimestamp(timestamp) {
   }
 }
 
-export function createApp(config, store, physicalOptions) {
+export function createApp(config, store, physicalOptions, voiceOptions = {}) {
   const app = express();
   const physical = createPhysicalMemory(config, store, physicalOptions);
+  const dial = config.DIAL_API_KEY ? voiceOptions.dial ?? createDial(config.DIAL_API_KEY) : null;
+  const reminders = createReminders(config, store, { dial, now: voiceOptions.now });
   app.disable('x-powered-by');
   app.get('/health', (_req, res) => res.json({ ok: true, demo: config.DEMO_MODE === 'true' }));
   app.use('/mcp', bearer(config.DIAL_MCP_TOKEN));
   app.use('/camera', bearer(config.CAMERA_TOKEN));
   app.use('/camera', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  app.use('/dial', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+
+  // Registered before the JSON parser: the signature covers the exact bytes Dial sent.
+  app.post('/dial/webhook', express.raw({ type: () => true, limit: '256kb' }), async (req, res) => {
+    if (!config.DIAL_WEBHOOK_SECRET) return res.status(503).json({ error: 'Dial webhooks are not configured' });
+    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!verifyDialSignature(config.DIAL_WEBHOOK_SECRET, req.get('x-dial-signature'), raw)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    let event;
+    try { event = JSON.parse(raw.toString('utf8')); } catch { return res.status(400).json({ error: 'Invalid JSON' }); }
+    const id = req.get('x-dial-event-id') || event.id;
+    if (typeof id !== 'string' || !id) return res.status(400).json({ error: 'Missing event ID' });
+    // Deliveries repeat; handling is idempotent, and the event is recorded only after it succeeds.
+    if (await store.seenDialEvent(id)) return res.json({ ok: true, duplicate: true });
+    await reminders.handleEvent(event);
+    await store.recordDialEvent(id, String(event.type || 'unknown'), new Date().toISOString());
+    res.json({ ok: true });
+  });
+  app.get('/dial/dispatch', (_req, res, next) => {
+    if (!config.CRON_SECRET || !reminders.ready) return res.status(503).json({ error: 'Reminder delivery is not configured' });
+    next();
+  }, bearer(config.CRON_SECRET), async (_req, res) => res.json(await reminders.dispatch()));
   app.use(express.json({ limit: '1mb' }));
 
   app.all('/mcp', async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();
     // shortcut: caller ID is only a demo allowlist, add verified identity before real personal data.
-    const authorized = config.DEMO_CALLER_NUMBER !== '' &&
-      req.get('x-dial-user-number') === config.DEMO_CALLER_NUMBER &&
-      req.get('x-dial-direction') === 'inbound';
-    await handleMcp(req, res, store, authorized, {
+    const caller = req.get('x-dial-user-number');
+    const direction = req.get('x-dial-direction');
+    const known = config.DEMO_CALLER_NUMBER !== '' && caller === config.DEMO_CALLER_NUMBER;
+    const access = {
+      caller,
+      memory: known && direction === 'inbound',
+      // Reminder calls ring the same person from Steph's line; they may ask to be reminded again.
+      reminders: known && ['inbound', 'outbound'].includes(direction) &&
+        req.get('x-dial-agent-number') === config.STEPH_NUMBER,
+    };
+    await handleMcp(req, res, store, access, {
       includeDemo: config.DEMO_MODE === 'true', cameraStatus: () => physical.status(),
-    });
+    }, reminders);
   });
 
   app.post('/camera/observations', async (req, res) => {
