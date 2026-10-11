@@ -170,7 +170,7 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 
 ### DEC-014 — Phone reminders through Dial, delivered by Vercel Cron
 
-- **Date / status / responsible:** 2026-10-11 / Accepted; amended by [DEC-020](#dec-020--confirm-sms-delivery-and-never-resend-ambiguous-attempts) for texts, and its call retry-with-`Idempotency-Key` behaviour is superseded by [DEC-021](#dec-021--never-blindly-retry-dial-writes) / Engineer 1; requested by the project owner, who asked for it to be merged.
+- **Date / status / responsible:** 2026-10-11 / Accepted; amended by [DEC-020](#dec-020--confirm-sms-delivery-and-never-resend-ambiguous-attempts) for texts, and its call retry-with-`Idempotency-Key` behaviour is superseded by [DEC-022](#dec-022--never-blindly-retry-dial-writes) / Engineer 1; requested by the project owner, who asked for it to be merged.
 - **Decision:** Steph's Dial line is `+12408962183` (`STEPH_NUMBER`, Dial nickname `Steph`). With `DIAL_API_KEY` set, callers set, list and cancel reminders through MCP tools, stored in a `reminders` table. A per-minute Vercel Cron request to `/cron/dial-reminders` claims due rows under a database lease. It places a Dial call with `Idempotency-Key: reminder-<id>`, or sends a text. The [DEC-013](#dec-013--signed-dial-webhooks-and-configurable-caller-headers) webhook passes every verified `call.ended` to an idempotent handler that settles the reminder and sends one fallback text for a missed call. Reminder tools accept the allowlisted caller on inbound *and* outbound calls, but only when `X-Dial-Agent-Number` is Steph's line. They honor `CALLER_PIN` like memory tools. [DEC-005](#dec-005--evidence-and-authorization-stay-explicit) is unchanged: memory retrieval stays inbound-only.
 - **Reason and consequences:** Cron plus database leases keeps delivery request-scoped ([DEC-004](#dec-004--finish-analysis-within-the-request)) with no new service or dependency. A per-minute cron needs a Vercel Pro team. Dial's idempotency key prevents duplicate calls on retry, and a lost webhook is reconciled from the call's status before any fallback. Texts have no such key, so they are sent at most once and never retried. Reminder tools and handlers stay off until `DIAL_API_KEY` is set, so an environment without the new table keeps serving. An answered call counts as delivered even when voicemail picks up. Caller ID is still not verified identity, and the store remains single-patient.
 - **Sources / validation:** [PR #5](https://github.com/mattdomingo/speedhacks/pull/5); `backend/voice/reminders.mjs`, `backend/test/reminders.test.mjs`. The suite passed on SQLite and Postgres 16 locally on 2026-10-11. Production configuration, a real reminder call through the hosted backend, and SMS deliverability without 10DLC registration are unverified.
@@ -205,7 +205,7 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 
 ### DEC-019 — Connect Steph to production camera memory
 
-- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 1 with Engineer 3; the project owner requested real phone testing.
+- **Date / status / responsible:** 2026-10-11 / Accepted; PIN configuration amended for the supervised demo by [DEC-021](#dec-021--temporarily-omit-the-pin-for-the-supervised-phone-demo) / Engineer 1 with Engineer 3; the project owner requested real phone testing.
 - **Decision:** Reuse Steph's existing Dial line and connect its Context MCP to the production `/mcp` endpoint. Replace the previous development MCP connection, since Dial requires unique tool names across connections. Configure the consented caller, existing memory PIN, provider credentials, and time zone through ignored local configuration and Vercel environment variables. Keep per-call caller headers supplied by Dial.
 - **Reason and consequences:** The existing `find_object` contract already serves camera evidence. No new voice service, database schema, or public image endpoint is needed. Preserve the agent's current persona and other capabilities when adding camera time-zone and freshness instructions. A connected MCP, authenticated smoke test, or signed webhook ping does not prove a real voice call; Gemini failures preserve historical sightings and must not be described as fresh observations.
 - **Sources / validation:** [Real phone procedure](docs/object-memory.md#test-with-stephs-phone-line), [dated readiness checks](docs/object-memory-validation.md#steph-phone-connection-readiness), `backend/voice/instructions.txt`. Caller numbers, PINs, and credentials are deliberately excluded from this record.
@@ -217,14 +217,21 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** Dial's send endpoint acknowledges queuing, not carrier delivery, and has no idempotency key. A timeout or process crash can leave an unknown outcome; retrying risks duplicate messages. Call leases and idempotency remain unchanged. Message-history polling is limited to the newest 100 matching messages, so absent records remain unresolved. US SMS also requires carrier registration; truthful status tracking does not enable an unregistered number. Adding account-wide message-status webhook events requires approval of that data connection; polling can operate without it.
 - **Sources / validation:** `backend/voice/reminders.mjs`, `backend/voice/dial.mjs`, both voice stores, `backend/schema.sql`, focused reminder and migration regressions; [Dial delivery contract](https://docs.getdial.ai/api-reference/events/message-status-changed), [message history](https://docs.getdial.ai/api-reference/rest-api/messages/list-messages). Real reminder calls and SMS delivery remain separate acceptance checks in [digital-memory validation](docs/digital-memory-validation.md).
 
-### DEC-021 — Never blindly retry Dial writes
+### DEC-021 — Temporarily omit the PIN for the supervised phone demo
+
+- **Date / status / responsible:** 2026-10-11 / Accepted; amends the production PIN choice in [DEC-019](#dec-019--connect-steph-to-production-camera-memory) / Project owner explicitly requested no PIN for now.
+- **Decision:** Remove `CALLER_PIN` from Production for this supervised test and redeploy current main. Keep the existing optional PIN code, preview credentials, MCP bearer token, consented caller allowlist, inbound-only memory access, and validation. Use the normal conditional voice instructions so a PIN is requested only if a backend later requires one.
+- **Reason and consequences:** Real phone calls failed to retrieve object, calendar, and email memories and never asked for a PIN, while direct PIN-authenticated lookups returned evidence. The owner chose a PIN-free demo. Caller ID can be spoofed, so this deliberately removes the second factor and is not suitable authentication for wider use. Re-enable a backend PIN and redeploy to end the exception; no schema, dependency, or authorization-code change is required.
+- **Sources / validation:** Explicit user instruction, "ideally no pin is required for now"; [phone procedure](docs/object-memory.md#test-with-stephs-phone-line) and [dated validation](docs/object-memory-validation.md#pin-free-supervised-phone-test). Production checks omit the PIN and separately verify rejection of unlisted/missing callers, outbound memory lookups, and missing bearer authentication.
+
+### DEC-022 — Never blindly retry Dial writes
 
 - **Date / status / responsible:** 2026-10-11 / Accepted; supersedes the retry behaviour in [DEC-014](#dec-014--phone-reminders-through-dial-delivered-by-vercel-cron) / Engineer 1.
 - **Decision:** Treat every failed `POST /calls` as `ambiguous`, `permanent` or definite (`backend/voice/dial.mjs`). An ambiguous failure (timeout, dropped connection, 5xx without a body) is looked up in Dial (`GET /calls`, `GET /messages` for that contact since the claim) and adopted if found. Otherwise the reminder waits as unconfirmed and is settled with one fallback text, and is never redialed. Texts follow [DEC-020](#dec-020--confirm-sms-delivery-and-never-resend-ambiguous-attempts) (reserved once, never resent). `409 calling_disabled` and other 4xx answers are surfaced and not retried. The `Idempotency-Key` header is still sent but never relied on. `DIAL_ALLOWED_NUMBERS` refuses any other destination before a request is made.
 - **Reason and consequences:** Dial's call guide says placing a call "isn't idempotent — there's no idempotency key, so a retry places a second call". Under DEC-014 a timed-out claim could ring a patient up to three times. A lost call is now settled as a missed reminder rather than risking a second call. Set `DIAL_ALLOWED_NUMBERS` whenever a real key runs outside production.
 - **Sources / validation:** `backend/test/dial-calls.test.mjs` (a timeout never produces a second `POST /calls` across 20 dispatch runs). A live reminder call on 2026-10-11 placed exactly one call. Bugs B-01 and B-02 in [BUGS.md](BUGS.md).
 
-### DEC-022 — Patients by caller number, and caregiver tools
+### DEC-023 — Patients by caller number, and caregiver tools
 
 - **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 1, with Engineer 2 for the scoped Google data.
 - **Decision:**
@@ -235,7 +242,7 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** The phone persona already promised caregiver instructions and emergency help that no tool could deliver. Testing patient isolation also needed a second patient. This is caller-number scoping, not verified identity ([DEC-005](#dec-005--evidence-and-authorization-stay-explicit) and [DEC-011](#dec-011--optional-caller-pin-as-a-second-factor) still apply). Reminders still use the global `TIMEZONE`, not each patient's (bug B-11, open). New tables `caregiver_message` and `dial_event_handled` are in `schema.sql`; apply them before enabling these features on Postgres.
 - **Sources / validation:** `backend/test/patients.test.mjs`, `caregiver.test.mjs` and `webhook-events.test.mjs`. On 2026-10-11, the MCP isolation matrix was checked live through a tunnel with Dial-style headers.
 
-### DEC-023 — Steph's app keeps memory on the phone; the backend only answers
+### DEC-024 — Steph's app keeps memory on the phone; the backend only answers
 
 - **Date / status / responsible:** 2026-10-11 / Accepted / iOS app owner (PR #11), with Engineer 1 for the backend routes.
 - **Decision:** The Recall iPhone app stores memories, embeddings and the people/places graph in SwiftData, and retrieves on-device. `POST /ask`, `/reminders` and `/embed` (`backend/steph/`) are stateless and gated by `RECALL_APP_TOKEN`, and they store nothing.
@@ -248,7 +255,7 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
   - The shared app token ships in the app binary: it is a demo restriction, not authentication.
 - **Sources / validation:** [PR #11](https://github.com/mattdomingo/speedhacks/pull/11), [TESTING.md](TESTING.md). In the live golden-set run on 2026-10-11, every no-answer question said "I'm not sure"; the overall score and latency are in TESTING.md.
 
-### DEC-024 — Seeded demo story shared by app and phone
+### DEC-025 — Seeded demo story shared by app and phone
 
 - **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 1 and the iOS app owner.
 - **Decision:** `npm run seed:demo` (and `DEMO_MODE=true` at startup) seeds the same story as the app's demo mode: keys on the kitchen counter, coffee with Priya at 3, Priya's mom's surgery, Sam Chen and the ramen promise, parking on Level 3 spot 42, a caregiver pill note, Maya visiting at 4, and an isolated demo patient B (`+15555550199`). Re-seeding clears earlier demo-only records first; real evidence is never touched.

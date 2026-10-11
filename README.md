@@ -60,7 +60,7 @@ npm start
 
 Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch mode: `npm run dev`.
 
-`DEMO_MODE=true` seeds the demo story at startup, dated today in the user's zone (`TIMEZONE`, else the Google calendar's, else UTC): keys on the kitchen counter next to the fruit bowl, the car on Level 3 spot 42, coffee with Priya at 3 PM and a note that her mom had surgery, Sam Chen (friend; the Tokyo ramen promise; lunch three weeks ago), daughter Maya visiting at 4 PM, a caregiver note about pills, and a separate demo patient B (`+15555550199`, son Diego) that the primary caller must never see. `npm run seed:demo` loads the same records into the configured database on demand; re-running the same day changes nothing. Seeded records have `demo: true`. Setting the flag to false stops seeding and excludes synthetic camera records from lookup, including fixtures already in the database. It does not erase records. Live object evidence always takes priority over fixtures. This scaffold has one demo user and no connected Google account.
+`DEMO_MODE=true` seeds the demo story at startup, dated today in the user's zone (`TIMEZONE`, else the Google calendar's, else UTC): keys on the kitchen counter next to the fruit bowl, the car on Level 3 spot 42, coffee with Priya at 3 PM and a note that her mom had surgery, Sam Chen (friend; the Tokyo ramen promise; lunch three weeks ago), daughter Maya visiting at 4 PM, a caregiver note about pills, and a separate demo patient B (`+15555550199`, son Diego) that the primary caller must never see. `npm run seed:demo` loads the same records into the configured database on demand; re-running the same day changes nothing. Seeded records have `demo: true`. Setting the flag to false stops seeding and excludes synthetic calendar, email, and camera records from lookup, including fixtures already in the database. It does not erase records. Live object evidence always takes priority over fixtures. Google reads require connecting the intended account separately.
 
 ## Contracts
 
@@ -88,11 +88,13 @@ Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch 
 | `POST /google/sync` | `Bearer ADMIN_TOKEN` | Sync Calendar and Gmail now |
 | `DELETE /google/connection` | `Bearer ADMIN_TOKEN` | Revoke at Google and delete synced Google evidence |
 | `GET /cron/google-sync` | `Bearer CRON_SECRET` | Vercel Cron: sync Google and prune expired Dial events |
-| `GET /cron/dial-reminders` | `Bearer CRON_SECRET` | Vercel Cron, every minute: deliver due reminders, settle calls whose webhook never arrived |
+| `GET /cron/dial-reminders` | `Bearer CRON_SECRET` | Vercel Cron, every minute: submit due reminders and reconcile call/text outcomes |
 | `GET /cron/caregiver-summary` | `Bearer CRON_SECRET` | Vercel Cron, daily 02:00 UTC: one summary text per patient per local day to their caregiver, never 9 PM–8 AM patient time |
-| `POST /webhooks/dial` | `X-Dial-Signature` HMAC (5-minute window) | Store Dial events once per `X-Dial-Event-ID`. `call.ended` settles reminder calls and flags missed calls; `call.transcribed` fetches the call and stores the patient's words (source `call`); `message.received` stores a patient's text; `webhook.ping` and other types are acknowledged |
+| `POST /webhooks/dial` | `X-Dial-Signature` HMAC (5-minute window) | Store Dial events once per `X-Dial-Event-ID`. `call.ended` settles reminder calls and flags missed calls; `call.transcribed` fetches the call and stores the patient's words (source `call`); `message.received` stores a patient's text; `message.status_changed` settles text delivery; `webhook.ping` and other types are acknowledged |
 
-With `CALLER_PIN` set, each memory and reminder tool also takes `pin` (`whats_today` does not); without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Every supplied PIN is counted before it is compared, so at most five guesses per caller number are evaluated in 15 minutes, however many arrive at once; `/mcp` also rejects JSON-RPC batches.
+With `CALLER_PIN` set, each memory and reminder tool also takes `pin` (`whats_today` does not); without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Wrong attempts are counted atomically, including concurrent requests; five wrong PINs cause lockout for the remainder of the 15-minute failure window. A correct PIN before lockout resets the count; a missing PIN does not increment it. `/mcp` also rejects JSON-RPC batches.
+
+For the owner's supervised October 11 phone demo, Production temporarily leaves `CALLER_PIN` unset so the allowed caller can use memory tools without a PIN. Bearer authentication, the caller allowlist, and inbound-only memory access still apply. This is the explicit [DEC-021 demo exception](AGENTS.md#dec-021--temporarily-omit-the-pin-for-the-supervised-phone-demo); the stronger authentication guidance below still applies outside that exception. Re-enable a backend PIN and redeploy to restore the prompt and check.
 
 Observation body:
 

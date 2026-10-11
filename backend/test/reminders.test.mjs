@@ -8,6 +8,7 @@ import { readConfig } from '../config.mjs';
 import { localInstant } from '../time.mjs';
 import { spokenTime } from '../voice/reminders.mjs';
 import { createDial } from '../voice/dial.mjs';
+import { PHONE_STYLE } from '../voice/phone-style.mjs';
 import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
 
 const PATIENT = '+14155550123';
@@ -214,6 +215,7 @@ test('dispatch is cron-authenticated and calls once per due reminder', async t =
   assert.match(call.idempotencyKey, /^reminder-[0-9a-f-]{36}$/);
   assert.match(call.instruction, /<reminder>Take the bblue\/b pill<\/reminder>/);
   assert.match(call.instruction, /AI assistant/);
+  assert.ok(call.instruction.endsWith(PHONE_STYLE));
   assert.equal((await store.reminderByCall('call-1')).status, 'calling');
   for (const off of [{ CRON_SECRET: undefined }, { DIAL_API_KEY: undefined }]) {
     assert.equal((await dispatch((await fixture(t, off)).url)).status, 503);

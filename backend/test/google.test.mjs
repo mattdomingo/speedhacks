@@ -13,6 +13,7 @@ import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
 import { createGoogle, endpoints, eventRecord, SCOPES } from '../digital/google.mjs';
 import { addDays, localDate, startOfDay } from '../time.mjs';
 import { getSchedule, searchMessages } from '../digital/index.mjs';
+import { seedDemo } from '../demo.mjs';
 
 const ZONE = 'America/Los_Angeles';
 const config = readConfig({
@@ -246,6 +247,22 @@ test('dates outside the synced window are fetched live, and failures are errors 
   const sync = await google.syncCalendar();
   assert.equal(sync.ok, false);
   assert.match((await google.status()).sync.find(state => state.name === 'google-calendar').last_error, /503 backendError/);
+});
+
+test('live Google failures cannot fall back to retained demo evidence', async t => {
+  const { url, remote, store } = await fixture(t);
+  await connectGoogle(url, store, remote);
+  await seedDemo(store, new Date(), ZONE);
+  await store.sql("UPDATE sync_state SET last_success = NULL");
+  remote.failCalendar = true;
+  const client = await mcp(t, url);
+  const plans = () => client.callTool({ name: 'get_schedule', arguments: { date: today } });
+  const mail = () => client.callTool({ name: 'search_messages', arguments: { query: 'Maya dinner' } });
+  assert.equal((await plans()).isError, true, 'demo plans do not hide a failed live calendar lookup');
+  assert.equal((await mail()).structuredContent.status, 'unknown', 'demo email is not a fallback for a live miss');
+  await store.markGoogleReconnectRequired((await store.googleSnapshot()).generation);
+  assert.equal((await plans()).isError, true);
+  assert.equal((await mail()).isError, true, 'demo mail does not hide expired Google access');
 });
 
 test('email search ranks synced mail and falls back to live Gmail search', async t => {

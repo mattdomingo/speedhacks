@@ -137,6 +137,30 @@ test('authorized inbound MCP calls retrieve demo evidence and handle unknown obj
   assert.equal(email.structuredContent.evidence[0].source, 'email');
 });
 
+test('live MCP excludes retained calendar and email fixtures without deleting them', async t => {
+  const { store, url } = await fixture(t, { DEMO_MODE: 'false' });
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+  await seedDemo(store, now);
+  const client = await connect(t, url, {
+    'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'inbound',
+  });
+  for (const [name, args, source] of [
+    ['get_schedule', { date }, 'calendar'],
+    ['search_messages', { query: 'Maya dinner' }, 'email'],
+  ]) {
+    const stored = await store.list(source);
+    const empty = (await client.callTool({ name, arguments: args })).structuredContent;
+    assert.equal(empty.status, 'unknown');
+    assert.deepEqual(empty.evidence, []);
+    await store.put({ id: `real-${source}`, source, date, timestamp: now.toISOString(),
+      text: 'Maya dinner plans', demo: false });
+    const real = (await client.callTool({ name, arguments: args })).structuredContent;
+    assert.deepEqual(real.evidence.map(item => item.id), [`real-${source}`]);
+    assert.deepEqual((await store.list(source)).filter(item => item.demo), stored, 'stored fixtures remain intact');
+  }
+});
+
 test('unknown caller and outbound direction cannot access memories', async t => {
   const { store, url } = await fixture(t);
   await seedDemo(store);
