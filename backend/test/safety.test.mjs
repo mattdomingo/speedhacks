@@ -58,7 +58,7 @@ const fakeDial = (turns, { down = false } = {}) => ({
 
 test('the phone persona discloses AI, sends emergencies to 911, refuses medical advice and ignores embedded instructions', () => {
   for (const line of [
-    /say you are an AI assistant/,
+    /Introduce yourself as Steph, an AI assistant, once at the start of the call/,
     /pain, a fall, or danger, tell them to hang up and call 911, then call notify_caregiver/,
     /Never call 911 yourself/,
     /Do not provide medication-taking confirmations, emergency-monitoring assurances, or medical advice/,

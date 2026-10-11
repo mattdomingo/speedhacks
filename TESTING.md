@@ -4,7 +4,7 @@ The end-to-end test, stress test and bug-fix pass from 2026-10-11. Bugs are in [
 
 > **Interim report.** This PR was opened while the iOS test track was still running. iOS results (Phase 2 iOS, Phase 5 scale and rapid input, Phase 6 accessibility and copy) and their `I-xx` bugs are pushed to this PR when that run lands. Every result below is labelled verified, pending or blocked.
 
-**Merge review update (2026-10-11):** integrated main through `7f20375`, preserving live-mode filtering, the optional PIN and shared phone style. Fixed retained demo people/caregiver notes leaking into live results, and reserved calls before HTTP so a crash or JSON 5xx response cannot trigger another call. The local backend suite passes 171 tests with three skips (two Postgres-only checks and the optional live golden set); all seven camera tests and codegen verification pass. Postgres CI and deployment checks are reported on PR #21. These checks do not rerun the live phone or iPhone scenarios below.
+**Merge review update (2026-10-11):** integrated main through `0e1f15b`, preserving live-mode filtering, the optional PIN, shared phone style and concise object replies. Fixed retained demo people/caregiver notes leaking into live results, and reserved calls before HTTP so a crash or JSON 5xx response cannot trigger another call. The local backend suite passes 171 tests with three skips (two Postgres-only checks and the optional live golden set); all seven camera tests and codegen verification pass. Postgres CI and deployment checks are reported on PR #21. These checks do not rerun the live phone or iPhone scenarios below.
 
 ## Summary
 
