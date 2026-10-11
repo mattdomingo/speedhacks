@@ -73,7 +73,7 @@ enum TextTools {
     static let questionStarters: Set<String> = [
         "where", "what", "whats", "who", "whos", "when", "why", "how", "which", "whose", "is", "are", "was", "were",
         "do", "does", "did", "can", "could", "should", "will", "would", "have", "has", "had", "tell", "remind",
-        "show", "find", "any", "anything", "help",
+        "show", "find", "read", "list", "search", "check", "look", "any", "anything", "help",
     ]
 
     /// True when the person is asking Steph something rather than telling her
@@ -89,9 +89,9 @@ enum TextTools {
     /// Ignore conversational addressing before classifying a spoken request.
     static func intentWords(_ text: String) -> [String] {
         var tokens = words(text)[...]
-        if let first = tokens.first, ["hey", "hi", "hello"].contains(first) { tokens = tokens.dropFirst() }
-        if tokens.first == "steph" { tokens = tokens.dropFirst() }
-        if tokens.first == "please" { tokens = tokens.dropFirst() }
+        while let first = tokens.first, ["hey", "hi", "hello", "steph", "please"].contains(first) {
+            tokens = tokens.dropFirst()
+        }
         return Array(tokens)
     }
 

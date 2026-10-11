@@ -16,7 +16,9 @@ final class TextToolsTests: XCTestCase {
     }
 
     func testAddressedQuestionsRemainQuestionsWithoutPunctuation() {
-        for question in ["Hey Steph, where are my keys", "Steph where is my wallet", "Hello Steph, please find my passport"] {
+        for question in ["Hey Steph, where are my keys", "Steph where is my wallet", "Hello Steph, please find my passport",
+                         "Read my recent emails", "Please Steph list my appointments", "Search my emails for lunch",
+                         "Check my calendar", "Look up my keys"] {
             XCTAssertTrue(TextTools.isQuestion(question), question)
         }
         for note in ["Hey Steph, remember that my keys are on the counter", "Steph, I put my passport in the drawer"] {
@@ -333,6 +335,40 @@ final class ProactiveEngineTests: XCTestCase {
                        "Ask how her mom is doing. She had surgery two weeks ago.")
         // An hour before 3:00 PM.
         XCTAssertEqual(calendar.component(.hour, from: candidate.fireDate), 14)
+    }
+
+    func testManualPriyaDemoWorksAfterCoffeeWithoutChangingRealPlanning() async throws {
+        let store = MemoryStore(modelContainer: try MemoryStore.makeContainer(inMemory: true))
+        for person in DemoSeed.people { try await store.upsert(person: person) }
+        try await store.upsert(memories)
+        let later = calendar.date(bySettingHour: 16, minute: 18, second: 0, of: now)!
+        let livePerson = Person(id: "live-priya", name: "Priya")
+        try await store.upsert(person: livePerson)
+        try await store.upsert([
+            Memory(id: "live-coffee", type: .event, summary: "Coffee with Priya", people: ["Priya"],
+                   timestamp: later.addingTimeInterval(3600), source: "calendar"),
+            Memory(id: "live-note", type: .note, summary: "Private live fact", people: ["Priya"],
+                   timestamp: now, source: "you", followUp: "Private live follow-up"),
+        ])
+        let engine = ProactiveEngine(store: store, client: StephClient(baseURL: nil, token: ""), calendar: calendar)
+        let result = await engine.demoReminder(now: later)
+        let reminder = try XCTUnwrap(result)
+        XCTAssertTrue(reminder.isDemo)
+        XCTAssertEqual(reminder.personName, "Priya")
+        XCTAssertEqual(reminder.subtitle, "Planned: Coffee today at 3:00")
+        XCTAssertEqual(reminder.fireDate, later)
+        XCTAssertEqual(reminder.body, "Ask how her mom is doing. She had surgery two weeks ago.")
+        XCTAssertTrue(reminder.memoryIDs.allSatisfy { $0.hasPrefix("demo-") })
+        XCTAssertTrue(ProactiveEngine.meetingCandidates(memories: memories, people: DemoSeed.people,
+                                                         now: later, calendar: calendar, horizon: 86_400).isEmpty)
+        let event = try await store.memories(ids: ["demo-event-priya-coffee"]).first
+        XCTAssertEqual(event?.timestamp, calendar.date(bySettingHour: 15, minute: 0, second: 0, of: now))
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: later)!
+        let nextPreview = await engine.demoReminder(now: nextDay)
+        XCTAssertEqual(nextPreview?.subtitle, "Planned: Coffee yesterday at 3:00")
+        try await store.removeDemoData()
+        let withoutDemo = await engine.demoReminder(now: later)
+        XCTAssertNil(withoutDemo, "Manual demo must never substitute live memories")
     }
 
     func testQuietHoursMoveToMorning() {

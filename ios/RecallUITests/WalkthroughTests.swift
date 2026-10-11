@@ -78,7 +78,7 @@ final class WalkthroughTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 10))
         app.buttons["Settings"].tap()
-        XCTAssertTrue(app.staticTexts["Memories on this phone only"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["MEMORIES ON THIS PHONE ONLY"].waitForExistence(timeout: 5))
         let code = app.secureTextFields["memory-access-code"]
         XCTAssertTrue(code.exists)
         XCTAssertFalse(app.buttons["Connect memories"].isEnabled)

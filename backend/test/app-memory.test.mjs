@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createApp } from '../app.mjs';
+import { getSchedule, searchMessages } from '../digital/index.mjs';
 import { readConfig } from '../config.mjs';
 import { checkPin } from '../voice/pin.mjs';
 import { createGemini } from '../steph/gemini.mjs';
@@ -335,6 +336,31 @@ test('lookup/database errors and stale Google access stay explicit and never bec
   const stale = await fixture(t, { google, claude: fakeClaude(recentPlan) });
   assert.equal((await stale.post()).body.code, 'memory_unavailable');
   assert.deepEqual(google.calls, []);
+});
+
+test('cached Google evidence cannot hide an app live lookup failure, while default callers retain fallback', async t => {
+  for (const source of ['calendar', 'email']) {
+    const google = fakeGoogle();
+    google.covers = async () => false;
+    google.mailFresh = async () => false;
+    google.fetchDay = google.searchMail = async () => { throw new Error('synthetic upstream failure'); };
+    const plan = source === 'calendar'
+      ? [{ tool: 'get_schedule', date: '2026-10-11', end_date: null }]
+      : [{ tool: 'search_messages', query: 'lunch', date: null, end_date: null }];
+    const f = await fixture(t, { google, claude: fakeClaude(plan) });
+    await f.store.put({ id: 'cached-' + source, source, date: '2026-10-11',
+      origin: source === 'calendar' ? 'google-calendar' : 'google-gmail',
+      timestamp: '2026-10-11T19:00:00Z', text: 'Cached lunch record.', demo: false });
+    const result = await f.post({ ...askBody, question: source === 'calendar' ? 'What is on my calendar today?' : 'Find my lunch email' });
+    assert.deepEqual([result.status, result.body.code], [503, 'memory_unavailable']);
+    assert.equal(result.body.evidence, undefined);
+    assert.equal(f.claude.calls.length, 1, 'Failed refresh never reaches answer inference');
+    assert.doesNotMatch(JSON.stringify(result.body), /Cached|synthetic|not sure/);
+    const legacy = source === 'calendar'
+      ? await getSchedule(f.store, '2026-10-11', google)
+      : await searchMessages(f.store, 'lunch', google);
+    assert.deepEqual(legacy.evidence.map(record => record.id), ['cached-' + source]);
+  }
 });
 
 test('fabricated citations and ungrounded supported answers fail; unsupported model prose is replaced', async t => {

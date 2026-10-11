@@ -66,14 +66,18 @@ struct ProactiveEngine: Sendable {
         return reminders
     }
 
-    /// The demo's "trigger reminder": Steph's card for the next demo meeting
-    /// (coffee with Priya), phrased on-device so it is instant and exact.
+    /// Explicitly previews the seeded coffee plan, even after its scheduled time.
+    /// Normal reminder planning still considers only upcoming events.
     func demoReminder(now: Date = Date()) async -> Reminder? {
         let memories = ((try? await store.all()) ?? []).filter(\.isDemo)
         let people = ((try? await store.people()) ?? []).filter(\.isDemo)
-        let candidate = Self.meetingCandidates(memories: memories, people: people, now: now, calendar: calendar,
-                                               horizon: 36 * 3600).first
-        guard let candidate else { return nil }
+        guard let event = memories.first(where: { $0.id == "demo-event-priya-coffee" && $0.type == .event }) else { return nil }
+        let selectionTime = min(now, event.timestamp.addingTimeInterval(-1))
+        guard var candidate = Self.meetingCandidates(memories: memories, people: people, now: selectionTime, calendar: calendar,
+                                                     horizon: 36 * 3600).first(where: { $0.id == "meeting-\(event.id)" }),
+              let person = candidate.person else { return nil }
+        candidate.subtitle = (event.timestamp <= now ? "Planned: " : "") + Self.meetingSubtitle(event, person: person, now: now, calendar: calendar)
+        candidate.fireDate = now
         let reminder = makeReminder(candidate, body: nil, score: 1, now: now, isDemo: true)
         try? await store.save(reminder: reminder)
         return reminder

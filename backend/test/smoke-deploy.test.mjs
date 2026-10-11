@@ -19,7 +19,9 @@ test('the deployment smoke check passes against the real app and catches an open
   const lines = [];
   const url = await serve(t, createApp(config, store));
   assert.deepEqual(await smokeDeploy(url, { attempts: 1, log: line => lines.push(line) }), []);
-  assert.equal(lines.length, 9);
+  assert.equal(lines.length, 11);
+  assert.ok(lines.some(line => line.includes('POST /app/session -> 503')));
+  assert.ok(lines.some(line => line.includes('POST /app/ask -> 503')));
 
   const broken = createApp({ ...config, CAMERA_TOKEN: undefined }, store);
   const leaky = await serve(t, broken);

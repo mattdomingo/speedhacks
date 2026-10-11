@@ -62,9 +62,17 @@ enum CardBuilder {
     /// "FROM YOUR CALENDAR + NOTE · SEP 27" for several.
     static func sourceLine(for memories: [Memory], now: Date) -> String {
         guard let first = memories.first else { return "NOTHING SAVED YET" }
-        if first.id.hasPrefix("shared:") {
+        if memories.count == 1, first.id.hasPrefix("shared:") {
             let label = sharedSourceLabel(first.source)
             return "\(label) · \(Phrases.sourceDate(first.timestamp, now: now, includeTime: true))".uppercased()
+        }
+        if memories.contains(where: { $0.id.hasPrefix("shared:") }) {
+            let labels = memories.reduce(into: [String]()) { labels, memory in
+                let label = memory.id.hasPrefix("shared:") ? sharedSourceLabel(memory.source) : memory.type.sourceLabel
+                if !labels.contains(label) { labels.append(label) }
+            }
+            let anchor = memories.filter { $0.timestamp <= now }.max { $0.timestamp < $1.timestamp } ?? first
+            return "From your \(labels.joined(separator: " + ")) · \(Phrases.sourceDate(anchor.timestamp, now: now, includeTime: true))".uppercased()
         }
         let types = memories.reduce(into: [MemoryType]()) { if !$0.contains($1.type) { $0.append($1.type) } }
         if types.count == 1, memories.count == 1 {

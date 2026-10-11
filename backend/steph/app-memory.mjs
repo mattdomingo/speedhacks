@@ -158,7 +158,9 @@ export function appMemoryRoutes(config, store, {
       const current = await ownGoogle.snapshot(context.scope);
       if (current.generation !== context.generation || current.state !== context.state) throw unavailable();
     })), signal);
-    const options = { includeDemo: false };
+    // A failed refresh stays visible in the app instead of looking like a successful
+    // lookup over cached records. Existing callers retain their fallback behavior.
+    const options = { includeDemo: false, failOnLiveError: true };
     const lookups = {
       get_schedule: ({ date, end_date }) => getSchedule(ownStore, date, ownGoogle, { ...options, endDate: end_date ?? date }),
       search_messages: ({ query, date, end_date }) => searchMessages(ownStore, query, ownGoogle, { ...options, date, endDate: end_date ?? date, timeZone }),

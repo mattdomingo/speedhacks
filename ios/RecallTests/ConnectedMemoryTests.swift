@@ -28,6 +28,19 @@ final class ConnectedMemoryTests: XCTestCase {
         XCTAssertTrue(CardBuilder.howIKnow(memory, question: "Where are my keys?", now: now).contains("Last confirmed camera sighting"))
     }
 
+    func testMixedLocalAndSharedSourcesKeepEverySourceInEitherOrder() {
+        let contact = Memory(id: "contact", type: .person, summary: "Sam", timestamp: now, source: "contacts")
+        let email = Memory(id: "shared:email", type: .note, summary: "Sam's message", timestamp: now.addingTimeInterval(-3600),
+                           source: "email")
+        for memories in [[contact, email, email], [email, contact, email]] {
+            let line = CardBuilder.sourceLine(for: memories, now: now)
+            XCTAssertTrue(line.contains("CONTACTS"))
+            XCTAssertTrue(line.contains("EMAIL"))
+            XCTAssertFalse(line.contains("NOTE"))
+            XCTAssertEqual(line.components(separatedBy: "EMAIL").count - 1, 1)
+        }
+    }
+
     func testSharedDemoEvidenceAndInvalidTimeAreRejected() throws {
         var evidence = StephClient.SharedEvidence(id: "shared:abc", type: "note", summary: "Synthetic", people: [],
             timestamp: "2026-10-11T19:00:00Z", source: "email", confidence: 1, demo: true)
