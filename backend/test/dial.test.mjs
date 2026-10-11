@@ -6,10 +6,12 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
 import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { testStore, TEST_DATABASE_URL, vercelHelpers } from './helpers.mjs';
 import { seedDemo } from '../demo.mjs';
 import { describeHeaders, verifyDialSignature } from '../voice/webhooks.mjs';
 import { checkPin } from '../voice/pin.mjs';
+import { PHONE_STYLE } from '../voice/phone-style.mjs';
 import { smokeObjectMemory } from '../../scripts/smoke-object-memory.mjs';
 
 const config = readConfig({
@@ -225,4 +227,9 @@ test('the cron prunes expired Dial events even after webhooks are switched off',
   const cron = await fetch(`${url}/cron/google-sync`, { headers: { Authorization: `Bearer ${'r'.repeat(64)}` } });
   assert.equal((await cron.json()).prunedDialEvents, 1);
   assert.deepEqual((await store.dialEvents()).map(event => event.id), ['new']);
+});
+
+test('the inbound instructions carry the same phone style as reminder calls', async () => {
+  const instructions = await readFile(new URL('../voice/instructions.txt', import.meta.url), 'utf8');
+  assert.ok(instructions.includes(PHONE_STYLE), 'instructions.txt must contain PHONE_STYLE verbatim');
 });
