@@ -16,7 +16,7 @@ flowchart LR
     Dial <-->|Context MCP: authenticated tools| Backend[Hosted backend]
     Backend <-->|Digital module: OAuth, cron sync, live fallback| Google[Calendar and email]
     Backend <-->|Read and write evidence| Store[(Managed Postgres on Vercel)]
-    Cron[Vercel Cron] -.->|Daily Google sync| Backend
+    Cron[Vercel Cron] -.->|Google sync every 10 minutes| Backend
     Dial -.->|Signed webhooks: call events| Backend
     Backend -.->|Optional: pseudonymous tool analytics| Keewano[Keewano]
     Camera[Laptop webcam process] -->|HTTPS: authenticated frames| Backend
@@ -104,16 +104,18 @@ Read-only scopes: `calendar.readonly` and `gmail.readonly` (Gmail search needs t
 
 1. In Google Cloud Console, enable the Calendar API and Gmail API, configure the consent screen (External, Testing, add test users), and create an OAuth client of type **Web application**. Authorize `http://localhost:3000/google/callback` for local use and `https://recall-kappa-nine.vercel.app/google/callback` (or the preview origin) when hosted.
 2. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `ADMIN_TOKEN`, `GOOGLE_TOKEN_KEY` and `CRON_SECRET` in `.env` or the Vercel environment (`npm run setup` generates the secrets). A partial Google configuration fails at boot. **Set `CALLER_PIN` too:** caller ID can be spoofed, and the PIN is what keeps a stranger from hearing this mailbox.
-3. On Postgres, run `npm run db:init` against that environment first; it adds the Google, Dial-event and PIN tables without touching existing records. SQLite creates them on open.
+3. On Postgres, apply and verify `npm run db:init` on the isolated preview database first, then apply the same reviewed schema to production before deploying dependent code. It adds the Google, Dial-event and PIN tables without copying SQLite records. SQLite creates them on open.
 4. `npm start` (or deploy), then `npm run google -- connect` and open the printed link within 10 minutes. Use `BACKEND_URL=https://…` for a hosted backend. The callback page appears after the first sync finishes.
 5. `npm run google -- status` shows the account, scopes, last sync and record counts; `sync` forces a sync; `disconnect` revokes access and deletes synced Google evidence.
 
+Completing a new consent flow clears the previous Google evidence and sync state, even when reconnecting the same account, before attempting a fresh sync. Consent can succeed while that first sync fails. Google answers may then be unavailable until a sync or live lookup succeeds; inspect `status` and retry `sync`. The previous account snapshot is not retained as a fallback.
+
 How retrieval works during a call:
 
-- A sync replaces the stored copy of calendar events from 7 days ago to 60 days ahead, and of mail matching `GMAIL_SYNC_QUERY` (default: the last 30 days, excluding promotions and social), capped at `GMAIL_SYNC_LIMIT` (at most 250, inside Gmail's per-minute quota). Cancelled or deleted items disappear on the next sync. Syncs run after connecting, from Vercel Cron (`vercel.json`, daily: the Hobby limit; use `*/10 * * * *` on Pro), via `npm run google -- sync`, and every `GOOGLE_SYNC_MINUTES` on long-running servers (not on Vercel, whose process timers are not durable).
+- A sync replaces the stored copy of calendar events from 7 days ago to 60 days ahead, and of mail matching `GMAIL_SYNC_QUERY` (default: the last 30 days, excluding promotions and social), capped at `GMAIL_SYNC_LIMIT` (at most 250, inside Gmail's per-minute quota). Cancelled or deleted items disappear on the next sync. Syncs run after connecting, from Vercel Cron (`vercel.json`, `*/10 * * * *` on the existing Pro plan), via `npm run google -- sync`, and every `GOOGLE_SYNC_MINUTES` on long-running servers (not on Vercel, whose process timers are not durable).
 - Tools answer from the database while the copy is fresh (synced within twice `GOOGLE_SYNC_MINUTES`, at least 30 minutes). Otherwise, and for dates outside the window or searches with no stored match, they ask Google inside the request under one `GOOGLE_LIVE_TIMEOUT_MS` deadline (default 1.5 s). Live mail search stays inside `GMAIL_SYNC_QUERY`. Nothing runs after the response (DEC-004).
 - Dates use `TIMEZONE`, else the Google calendar's zone, else UTC, including daylight-saving changes. `get_schedule`'s description tells the voice model today's date in that zone.
-- Email text is the sender, subject and Gmail's snippet (at most 300 characters), never full bodies. The refresh token is encrypted with AES-256-GCM; Google writes are fenced against a concurrent disconnect.
+- Email text is the sender, subject and Gmail's snippet (at most 300 characters), never full bodies. The refresh token is encrypted with AES-256-GCM; Google writes and lookup responses are bound to the active connection and granted scopes, including across disconnects and reconnections.
 
 ## Dial connection: follow-up work
 
@@ -121,7 +123,7 @@ How retrieval works during a call:
 2. In Dial Context MCP settings, add `https://recall-kappa-nine.vercel.app/mcp` with static header `Authorization: Bearer YOUR_DIAL_MCP_TOKEN`.
 3. Configure the number's inbound instruction with `backend/voice/instructions.txt`.
 4. Set `DEMO_CALLER_NUMBER` (and `CALLER_PIN`), then call from that number with `DIAL_LOG_HEADERS=true` once. The log lists the header names Dial sent, with phone numbers cut to their last four digits and other Dial values reduced to their length. If the caller and direction headers differ from the defaults, set `DIAL_CALLER_HEADER` and `DIAL_DIRECTION_HEADER`, then turn logging off.
-5. Optional: in the Dial dashboard, add a webhook to `https://…/webhooks/dial` and put its signing secret in `DIAL_WEBHOOK_SECRET`. Events such as `call.ended` and `call.transcribed` are stored once each; transcripts contain personal speech, so retention defaults to 30 days.
+5. Optional: in the Dial dashboard, add a webhook to `https://…/webhooks/dial` and put its signing secret in `DIAL_WEBHOOK_SECRET`. Set a separate `CRON_SECRET` even when Google is disabled: the authenticated cron prunes expired Dial events without waiting for another webhook. Verify cron delivery after deploying. Events such as `call.ended` and `call.transcribed` are stored once each; transcripts contain personal speech, so retention defaults to 30 days.
 
 Dial is expected to supply `X-Dial-User-Number` and `X-Dial-Direction` during calls; public Dial sources do not confirm these names, hence step 4. The backend checks the configured caller and inbound direction. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller.
 
@@ -147,7 +149,7 @@ Use `PYTHON=.venv/bin/python npm run camera -- --preview` to position the tablet
 
 ### Vercel and managed Postgres
 
-The existing [Vercel project `recall`](https://vercel.com/openfloor-51a7e770/recall) belongs to the **openfloor** team (`openfloor-51a7e770`). Its connected Git repository is `mattdomingo/speedhacks`, with `main` as the production branch. Pushes to `main` deploy production; other branches receive protected previews.
+The existing [Vercel project `recall`](https://vercel.com/openfloor-51a7e770/recall) belongs to the **openfloor** team (`openfloor-51a7e770`). The team uses Vercel Pro (checked October 11, 2026); `vercel.json` schedules sync and retention cleanup every ten minutes. Its connected Git repository is `mattdomingo/speedhacks`, with `main` as the production branch. Pushes to `main` deploy production; other branches receive protected previews.
 
 Neon resources `recall-production` and `recall-preview` use the Free plan in `iad1`, alongside the function region. Their initialized databases and API tokens are separate. Each database is connected only to its matching Vercel environment. At the October 11 hosting handoff, production ran with `DEMO_MODE=true` and `DEMO_CALLER_NUMBER` was not configured, so MCP tool discovery works but callers cannot retrieve evidence until a consented test number is configured and deployed.
 
@@ -176,6 +178,9 @@ The repository is configured for Vercel Services with a single Express service:
       "source": "/(.*)",
       "destination": { "service": "recall" }
     }
+  ],
+  "crons": [
+    { "path": "/cron/google-sync", "schedule": "*/10 * * * *" }
   ]
 }
 ```
@@ -184,13 +189,13 @@ The catch-all preserves existing request paths: `/health`, `/mcp`, `/camera/fram
 
 The native Express runtime handles the backend; Vercel does not use the Dockerfile. The root `server.mjs` entrypoint loads the existing backend startup and lets Vercel's Express builder discover it. Postgres holds both observations and the latest JPEG. Database calls are asynchronous, and the connection pool uses Vercel's lifecycle helper. When `VERCEL=1`, startup fails without `DATABASE_URL` instead of using ephemeral SQLite.
 
-To recreate this infrastructure in a different Vercel project:
+For schema or configuration changes to the existing deployment:
 
-1. Create or select a Vercel project for this repository, with its root directory set to the repository root and project framework preset set to **Services**. Use a Node 22 runtime as specified in `package.json`.
-2. Connect a managed Postgres database through the [Vercel Marketplace](https://vercel.com/docs/postgres), or use an existing provider. Select a database region near the Vercel function region. Set `DATABASE_URL` to the provider's pooled connection URL with TLS. Keep preview and production databases separate; a preview must not write production memories.
-3. Set the environment variables below in each Vercel environment you intend to deploy. Keep local secrets in ignored `.env` files, never in `vercel.json` or client code.
-4. Initialize each new database once before serving traffic. With its `DATABASE_URL` in your local ignored `.env` or exported shell environment, run `npm run db:init`. This executes `backend/schema.sql` and preserves existing tables and records. It does not copy existing SQLite data, and migrations do not run during Vercel builds or function startup.
-5. Link the repository with `npx vercel@latest link`, verify locally using `npx vercel@latest dev -L`, then deploy a preview with `npx vercel@latest --target preview`. After checking it, publish with `npx vercel@latest --prod`. Vercel otherwise assigns a new project's first deployment to production. Set the laptop's `BACKEND_URL` to the production HTTPS origin and configure Dial's `/mcp` URL.
+1. Link the existing `recall` project as above. Confirm the target environment and database before changing either. Keep the Node 22 runtime specified in `package.json`.
+2. Use the provider's TLS-enabled pooled `DATABASE_URL`, with the database near the function region. Preview and production must keep separate databases and credentials.
+3. Configure the variables below in the intended Vercel environment. Keep local secrets in ignored `.env` files, never in `vercel.json` or client code. Configure `CRON_SECRET` for hosted Google sync or Dial webhook retention.
+4. Apply `npm run db:init` with the **preview** database URL first. It executes `backend/schema.sql`; migrations do not run during builds or startup. Deploy a protected preview and verify authenticated reads/writes and the affected integration there. Use only a disposable database for `TEST_DATABASE_URL` checks.
+5. After preview validation, apply the same reviewed schema to the **production** database before merging dependent code to `main`. Check the resulting production deployment and scheduled cron. Keep the laptop's `BACKEND_URL` and Dial's `/mcp` URL pointed at the intended production origin.
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
@@ -204,14 +209,15 @@ To recreate this infrastructure in a different Vercel project:
 | `BACKEND_URL` | Laptop only | Public backend origin, e.g. `https://YOUR_PROJECT.vercel.app`; local default follows `PORT` |
 | `DATA_DIR` | Local SQLite only | Database directory; default `./data`; ignored when `DATABASE_URL` is set |
 | `CALLER_PIN` | Backend | 4–8 digits callers must also say; set before connecting real Google data |
-| `ADMIN_TOKEN`, `GOOGLE_*`, `CRON_SECRET` | Backend | Google connection and sync; see [Google connection](#google-connection) |
+| `ADMIN_TOKEN`, `GOOGLE_*` | Backend | Google connection and sync; see [Google connection](#google-connection) |
+| `CRON_SECRET` | Backend / Vercel Cron | At least 32 characters; required with hosted Google sync or Dial webhooks so scheduled sync and retention cleanup can authenticate |
 | `DIAL_WEBHOOK_SECRET`, `DIAL_*_HEADER`, `DIAL_LOG_HEADERS` | Backend | Dial webhooks and caller-header names |
 | `KEEWANO_API_KEY` | Backend | Optional Keewano analytics; empty disables it |
 | `PORT` | Local server/Compose | Default `3000`; Vercel manages its service port |
 
 To use `vercel dev -L`, put local test database credentials and application secrets in `.env`. Use the port printed by Vercel for `/health`, `/mcp`, and `BACKEND_URL`. This exercises the same service routing as deployment without creating cloud resources. `npm start` still runs the backend directly for SQLite development.
 
-After deployment, check `/health`, verify unauthenticated camera requests return 401, and test an authenticated upload and retrieval. `/health` is liveness only; it does not prove database connectivity. Run the MCP tests and a real Dial call before claiming the voice integration works. Existing SQLite records stay in `DATA_DIR`; moving those records into Postgres requires a separate import.
+After deployment, check `/health`, verify unauthenticated camera requests return 401, and test an authenticated upload and retrieval. `/health` is liveness only; it does not prove database connectivity. Verify an authenticated cron request and its later scheduled production invocation; previews need a manual check. Record these separately from a real Google consent/sync/retrieval test and a real inbound Dial call with the observed caller headers and PIN. MCP smoke tests prove neither integration. Existing SQLite records stay in `DATA_DIR`; moving those records into Postgres requires a separate import.
 
 The existing project and databases above were provisioned separately; these files alone do not provision them or a Dial number. See [Vercel Services](https://vercel.com/docs/services), [Express hosting](https://vercel.com/docs/frameworks/backend/express), and [database connection pools](https://vercel.com/kb/guide/connection-pooling-with-functions).
 
@@ -229,10 +235,21 @@ Do not use ephemeral container storage for SQLite. Neither Compose nor the Docke
 
 | Sponsor | Use here | Status |
 | --- | --- | --- |
-| Dial | Phone number, managed voice agent, Context MCP to `/mcp`, signed webhooks to `/webhooks/dial` | Wired; header names to confirm on a live call |
-| Keewano | Product analytics: tool used, latency, evidence count, empty answers, evidence origin, rejected callers, sync results, Dial event types | Wired; set `KEEWANO_API_KEY` to enable |
-| Alike | Shared decision memory for the team's coding agents (see [AGENTS.md](AGENTS.md#alike-coordination-when-connected)) | Dev-time only; `.alikeignore` keeps secrets out of captured sessions |
-| Sparta | Worlds (local SaaS replicas such as Gmail) for testing the email adapter against a mock inbox | Not wired: it needs configurable Google endpoints, which would also redirect OAuth tokens |
+| Dial | Managed voice agent, Context MCP to `/mcp`, signed webhooks to `/webhooks/dial` | Backend implemented; provision/configure account and confirm caller headers on a real call |
+| Keewano | Tool, latency, evidence-origin, sync and call-event analytics | Optional event reporting; `KEEWANO_API_KEY` enables it. No product query loop is implemented |
+| Alike | Shared decisions for coding agents (see [AGENTS.md](AGENTS.md#alike-coordination-when-connected)) | Development workflow; inspect capture/privacy settings before sharing sensitive work |
+| Darwin | Agent discovery | Not integrated; current memory retrieval does not need provider discovery |
+| Sparta | Local synthetic business-API testing | Not integrated. The supplied kit has Stripe and a demo ticket desk, **no Gmail or Calendar**; do not redirect Google OAuth endpoints to it |
+
+Offers checked against the [event resources](https://hackersquad.io/events/speedhacks-oct11/resources?tab=resources) on October 11, 2026; published offers do not prove account redemption:
+
+- **Dial:** request **$100** with coupon `DIAL_FOR_SPEEDHACKS` and the same signup email at the [event quickstart](https://www.getdial.ai/hackathon/speedhacks/quickstart). Unused coupon credits expire at the end of the event day. New accounts have five-minute calls and two concurrent calls; confirm account limits after redemption.
+- **Keewano:** the [SpeedHacks guide](https://docs.keewano.com/getting-started/speedhacks-quickstart) directs account owners to send `#SpeedHacks` in platform chat for full event access, MCP and team seats. The partner award requires meaningful queries that affect the product and at least one live query; optional event reporting alone does not qualify. Allow about five minutes for new events to become queryable.
+- **Alike:** signup invitation `HACKS` appears in the [official docs](https://alike.help/); no monetary credit is stated.
+- **Darwin:** [Search](https://darwin.so/speedhacks) is free. The [launch allowance](https://darwin.so/docs/admin/rate-limits) is one million requests per caller per rolling 24 hours until October 12, 2026, 7 PM PDT. Act beta access is by request; provider costs may still apply.
+- **Sparta:** the [supplied starter](https://drive.google.com/file/d/1UdeeG0AtDsgHZbY-4fMcFRGozUCbVt-0/view) is free for local/internal testing and CI, without signup or bundled model credits. Its pinned `sparta_worlds@0.9.0-beta.3` needs Node 24+, so any experiment belongs in a separate harness. The [award rubric](https://drive.google.com/file/d/1B5u9p0D7WcUOlBL2t_389wMY2-n9WSpi/view) requires a sandbox test, failure, fix and comparable rerun.
+
+The listed event resources provide no general Vercel, cloud or Postgres credit offer. Keep the existing infrastructure; Keewano analytics does not replace the evidence database. Partner awards are optional for the overall competition. The [submission rules](https://hackersquad.io/events/speedhacks-oct11/resources?tab=rules) require project details, accessible source and a demo of at most five minutes, explicitly submitted by **October 11, 2026, 5 PM PDT**. Label mocks and distinguish measured time savings from estimates.
 
 Keewano receives no phone numbers or personal content: callers become HMAC-derived UUIDs, rejected callers share one anonymous ID, and events carry only tool names, counts, latency and origin labels. Without a persistent disk (Vercel), batches stay in memory and ship within about two seconds. Event definitions live in `backend/analytics/keewano.events.json`; append (never reorder), then run `npm run keewano:codegen`, which converts Keewano's generated TypeScript to plain JS with Node's built-in type stripping. CI fails if the generated file is stale.
 

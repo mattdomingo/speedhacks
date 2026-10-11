@@ -27,9 +27,15 @@ function unavailable(source) {
   return error;
 }
 
+async function result(evidence, google, context) {
+  if (google) await google.assertCurrent(context);
+  return memoryResult(evidence);
+}
+
 // Engineer 2: Google records are synced into the store; uncovered dates are fetched live.
 export async function getSchedule(store, date, google) {
-  const calendar = google ? await google.state('calendar') : 'absent';
+  const context = google ? await google.snapshot('calendar') : undefined;
+  const calendar = context?.state ?? 'absent';
   // An expired connection with nothing stored for the date cannot answer "no plans".
   if (calendar === 'reconnect_required' && !(await store.list('calendar')).some(item => overlaps(item, date))) {
     throw unavailable('Calendar');
@@ -37,24 +43,26 @@ export async function getSchedule(store, date, google) {
   if (calendar === 'connected') {
     if (!(await google.covers(date))) {
       try {
-        await google.fetchDay(date);
+        await google.fetchDay(date, context);
       } catch (error) {
+        await google.assertCurrent(context);
         console.error(`Live calendar lookup failed: ${error.message}`);
         // An empty answer would wrongly claim "no plans"; report the failure instead.
         if (!(await store.list('calendar')).some(item => overlaps(item, date))) throw unavailable('Calendar');
       }
     }
   }
-  return memoryResult((await store.list('calendar'))
-    .filter(item => overlaps(item, date))
-    .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)));
+  return result((await store.list('calendar'))
+    .filter(item => overlaps(item, date) && (calendar !== 'absent' || item.origin !== 'google-calendar'))
+    .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)), google, context);
 }
 
 // Scores sender, subject and snippet only (not generated boilerplate such as dates), and
 // needs at least half the terms so one common word cannot claim a match.
-async function rank(store, query) {
+async function rank(store, query, includeGoogle) {
   const needed = Math.ceil(query.length / 2);
   return (await store.list('email'))
+    .filter(item => includeGoogle || item.origin !== 'google-gmail')
     .map(item => {
       const haystack = words(item.snippet === undefined ? item.text
         : `${item.from ?? ''} ${item.fromAddress ?? ''} ${item.subject ?? ''} ${item.snippet}`);
@@ -69,19 +77,21 @@ async function rank(store, query) {
 export async function searchMessages(store, text, google) {
   const query = terms(text);
   if (!query.length) return memoryResult([]);
-  const local = await rank(store, query);
-  const gmail = google ? await google.state('gmail') : 'absent';
+  const context = google ? await google.snapshot('gmail') : undefined;
+  const gmail = context?.state ?? 'absent';
+  const local = await rank(store, query, gmail !== 'absent');
   if (gmail === 'reconnect_required' && !local.length) throw unavailable('Email');
-  if (gmail !== 'connected') return memoryResult(local);
+  if (gmail !== 'connected') return result(local, google, context);
   // A fresh copy answers directly; a stale one (or a miss) asks Gmail within this request.
-  if (local.length && await google.mailFresh()) return memoryResult(local);
+  if (local.length && await google.mailFresh()) return result(local, google, context);
   try {
     // Gmail matches full bodies, which the stored snippet may not contain; trust its ranking.
-    const live = await google.searchMail(query.join(' '));
-    return memoryResult(live.length ? live : local);
+    const live = await google.searchMail(query.join(' '), context);
+    return result(live.length ? live : local, google, context);
   } catch (error) {
+    await google.assertCurrent(context);
     console.error(`Live Gmail search failed: ${error.message}`);
-    if (local.length) return memoryResult(local);
+    if (local.length) return result(local, google, context);
     throw unavailable('Email');
   }
 }

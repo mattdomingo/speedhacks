@@ -22,15 +22,19 @@ export function postgresVoiceStore(pool) {
         WHERE caller_hash = $1 AND window_start > now() - make_interval(secs => $2)`, [callerHash, windowSeconds]);
       return rows[0]?.failures ?? 0;
     },
-    async recordPinFailure(callerHash, windowSeconds) {
-      await pool.query(`INSERT INTO caller_pin_failure AS f (caller_hash, failures, window_start) VALUES ($1, 1, now())
+    // The row lock acquired by ON CONFLICT covers the limit check and counter update.
+    // A locked caller produces no returned row, even for the correct PIN.
+    async recordPinAttempt(callerHash, correct, windowSeconds, maxFailures) {
+      const { rowCount } = await pool.query(`INSERT INTO caller_pin_failure AS f (caller_hash, failures, window_start)
+        VALUES ($1, CASE WHEN $2 THEN 0 ELSE 1 END, now())
         ON CONFLICT (caller_hash) DO UPDATE SET
-          failures = CASE WHEN f.window_start > now() - make_interval(secs => $2) THEN f.failures + 1 ELSE 1 END,
-          window_start = CASE WHEN f.window_start > now() - make_interval(secs => $2) THEN f.window_start ELSE now() END`,
-      [callerHash, windowSeconds]);
-    },
-    async clearPinFailures(callerHash) {
-      await pool.query('DELETE FROM caller_pin_failure WHERE caller_hash = $1', [callerHash]);
+          failures = CASE WHEN $2 THEN 0
+            WHEN f.window_start <= now() - make_interval(secs => $3) THEN 1 ELSE f.failures + 1 END,
+          window_start = CASE WHEN f.failures = 0 OR f.window_start <= now() - make_interval(secs => $3)
+            THEN now() ELSE f.window_start END
+        WHERE f.failures < $4 OR f.window_start <= now() - make_interval(secs => $3)
+        RETURNING failures`, [callerHash, correct, windowSeconds, maxFailures]);
+      return rowCount === 1;
     },
   };
 }

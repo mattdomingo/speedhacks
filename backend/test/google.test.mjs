@@ -9,8 +9,9 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
 import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
-import { createGoogle, SCOPES } from '../digital/google.mjs';
+import { createGoogle, eventRecord, SCOPES } from '../digital/google.mjs';
 import { addDays, localDate, startOfDay } from '../time.mjs';
+import { getSchedule, searchMessages } from '../digital/index.mjs';
 
 const ZONE = 'America/Los_Angeles';
 const config = readConfig({
@@ -27,7 +28,8 @@ const quietLog = { warn() {}, error() {} };
 function fakeGoogle() {
   const google = {
     calls: [], events: [], messages: [], failCalendar: false, revoked: [],
-    grantedScope: Object.values(SCOPES).join(' '), refreshValid: true,
+    grantedScope: Object.values(SCOPES).join(' '), refreshValid: true, account: 'me@example.com',
+    accessAccounts: new Map(), refreshAccounts: new Map(),
   };
   const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { 'Content-Type': 'application/json' },
@@ -41,10 +43,16 @@ function fakeGoogle() {
       if (params.get('grant_type') === 'refresh_token' && !google.refreshValid) {
         return json({ error: 'invalid_grant' }, 400);
       }
+      const authorization = params.get('grant_type') === 'authorization_code';
+      const account = authorization ? google.account : google.refreshAccounts.get(params.get('refresh_token'));
+      const access = `access-${google.calls.length}`;
+      google.accessAccounts.set(access, account);
+      const refresh = account === 'me@example.com' ? 'refresh-secret-value' : `refresh-${google.calls.length}`;
+      if (authorization) google.refreshAccounts.set(refresh, account);
       return json({
-        access_token: `access-${google.calls.length}`, expires_in: 3600, token_type: 'Bearer',
+        access_token: access, expires_in: 3600, token_type: 'Bearer',
         scope: google.grantedScope,
-        ...(params.get('grant_type') === 'authorization_code' ? { refresh_token: 'refresh-secret-value' } : {}),
+        ...(authorization ? { refresh_token: refresh } : {}),
       });
     }
     if (url.href.startsWith('https://oauth2.googleapis.com/revoke')) {
@@ -52,14 +60,16 @@ function fakeGoogle() {
       return json({});
     }
     assert.match(init.headers.Authorization, /^Bearer access-/);
-    if (url.pathname === '/calendar/v3/calendars/primary') return json({ id: 'me@example.com', timeZone: ZONE });
+    const account = google.accessAccounts.get(init.headers.Authorization.slice(7));
+    if (url.pathname === '/calendar/v3/calendars/primary') return json({ id: account, timeZone: ZONE });
+    if (url.pathname === '/gmail/v1/users/me/profile') return json({ emailAddress: account });
     if (url.pathname === '/calendar/v3/calendars/primary/events') {
       if (google.failCalendar) return json({ error: { errors: [{ reason: 'backendError' }] } }, 503);
       const min = Date.parse(url.searchParams.get('timeMin'));
       const max = Date.parse(url.searchParams.get('timeMax'));
       return json({ items: google.events.filter(event => {
         const start = Date.parse(event.start.dateTime ?? `${event.start.date}T12:00:00-07:00`);
-        return start >= min && start < max;
+        return (!event.account || event.account === account) && start >= min && start < max;
       }) });
     }
     if (url.pathname === '/gmail/v1/users/me/messages') {
@@ -102,13 +112,6 @@ async function connectGoogle(url, store, remote) {
   const authorizationUrl = new URL((await begin.json()).authorizationUrl);
   const state = authorizationUrl.searchParams.get('state');
   const callback = await fetch(`${url}/google/callback?code=auth-code&state=${state}`);
-  // The callback starts the first sync in the background; let it finish so it cannot race the test.
-  const expected = ['google-calendar', ...(remote.grantedScope.includes(SCOPES.gmail) ? ['google-gmail'] : [])];
-  for (let i = 0; callback.ok && i < 100; i++) {
-    const names = (await store.syncState()).map(row => row.name);
-    if (expected.every(name => names.includes(name))) break;
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
   return { authorizationUrl, state, callback };
 }
 
@@ -157,7 +160,8 @@ test('Google tables initialize idempotently and keep the connection across reope
   await store.put({ id: 'kept', source: 'camera', object: 'keys', location: 'desk', timestamp: '2026-01-01T00:00:00Z', text: 'x' });
   const remote = fakeGoogle();
   const google = createGoogle({ config, store, fetch: remote.fetch, log: quietLog });
-  await store.saveGoogleConnection({ scope: SCOPES.calendar, refreshToken: 'sealed', email: 'me@example.com' });
+  await store.saveGoogleConnection({ scope: SCOPES.calendar, refreshToken: 'sealed', email: 'me@example.com',
+    generation: (await store.googleSnapshot()).generation });
   const reopened = store.reopen();
   t.after(() => reopened.close());
   assert.equal((await reopened.googleConnection()).email, 'me@example.com');
@@ -327,7 +331,7 @@ test('unreadable Google responses, expired access and narrower consent never fak
   assert.equal((await flaky.syncCalendar()).ok, false);
   assert.equal((await store.countByOrigin())['google-calendar'], 1, 'a garbled 200 must not wipe the synced copy');
 
-  await store.markGoogleReconnectRequired();
+  await store.markGoogleReconnectRequired((await store.googleSnapshot()).generation);
   const client = await mcp(t, url);
   const far = await client.callTool({ name: 'get_schedule', arguments: { date: addDays(today, 3) } });
   assert.equal(far.isError, true);
@@ -336,7 +340,7 @@ test('unreadable Google responses, expired access and narrower consent never fak
   assert.equal((await client.callTool({ name: 'search_messages', arguments: { query: 'passport' } })).isError, true);
 
   remote.grantedScope = SCOPES.calendar;
-  await store.upsertOrigin('google-gmail', [{ id: 'gmail:old', source: 'email', origin: 'google-gmail', timestamp: new Date().toISOString(), text: 'old', snippet: 'old', demo: false }]);
+  await store.upsertOrigin('google-gmail', [{ id: 'gmail:old', source: 'email', origin: 'google-gmail', timestamp: new Date().toISOString(), text: 'old', snippet: 'old', demo: false }], (await store.googleSnapshot()).generation);
   await connectGoogle(url, store, remote);
   assert.equal((await store.countByOrigin())['google-gmail'], undefined);
 });
@@ -344,13 +348,14 @@ test('unreadable Google responses, expired access and narrower consent never fak
 test('a changed token key or an in-flight sync cannot block or undo a disconnect', async t => {
   const { url, remote, store } = await fixture(t);
   await connectGoogle(url, store, remote);
+  const oldGeneration = (await store.googleSnapshot()).generation;
   const rekeyed = createGoogle({ config: { ...config, GOOGLE_TOKEN_KEY: 'e'.repeat(64) }, store, fetch: remote.fetch, log: quietLog });
   assert.equal((await rekeyed.syncCalendar()).ok, false);
   assert.equal((await rekeyed.status()).connection.status, 'reconnect_required');
   await rekeyed.disconnect();
   assert.equal(await store.googleConnection(), undefined);
   // A sync that finishes after the disconnect writes nothing.
-  await store.replaceOrigin('google-calendar', [{ id: 'gcal:late', source: 'calendar', timestamp: new Date().toISOString(), date: today, text: 'late' }]);
+  await store.replaceOrigin('google-calendar', [{ id: 'gcal:late', source: 'calendar', timestamp: new Date().toISOString(), date: today, text: 'late' }], oldGeneration);
   assert.equal((await store.countByOrigin())['google-calendar'], undefined);
 });
 
@@ -414,7 +419,7 @@ test('a database without the new tables keeps serving while Google, PIN and webh
 }, async t => {
   const store = await testStore(t);
   // As on an environment that has not run `npm run db:init` since these tables were added.
-  await store.sql('DROP TABLE google_connection, oauth_state, sync_state, dial_event, caller_pin_failure');
+  await store.sql('DROP TABLE google_connection, google_generation, oauth_state, sync_state, dial_event, caller_pin_failure');
   const off = { ...config, GOOGLE_CLIENT_ID: undefined, CRON_SECRET: 'r'.repeat(64), DEMO_MODE: 'true' };
   await store.put({ id: 'demo-calendar', source: 'calendar', date: today, text: 'DEMO plan', timestamp: new Date().toISOString(), demo: true });
   const server = createApp(off, store, undefined, { google: createGoogle({ config: off, store }) }).listen(0, '127.0.0.1');
@@ -427,4 +432,190 @@ test('a database without the new tables keeps serving while Google, PIN and webh
   assert.equal((await client.callTool({ name: 'search_messages', arguments: { query: 'dinner' } })).isError, undefined);
   const cron = await fetch(`${url}/cron/google-sync`, { headers: { Authorization: `Bearer ${off.CRON_SECRET}` } });
   assert.equal(cron.status, 200);
+});
+
+
+// Pause a real adapter response at a deterministic boundary; no clocks or network sleeps.
+function heldFetch(fetch, matches) {
+  let arrive;
+  let release;
+  let enabled = false;
+  const reached = new Promise(resolve => { arrive = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  return {
+    reached, release, enable() { enabled = true; },
+    async fetch(input, init) {
+      const response = await fetch(input, init);
+      if (enabled && matches(new URL(input), init)) {
+        enabled = false;
+        arrive();
+        await resumed;
+      }
+      return response;
+    },
+  };
+}
+
+async function authorize(google) {
+  const url = new URL(await google.beginConnect());
+  return google.completeConnect('auth-code', url.searchParams.get('state'));
+}
+
+function calendarEvent(id, date = today, account) {
+  return { id, account, summary: id, status: 'confirmed',
+    start: { dateTime: `${date}T10:00:00-07:00` }, end: { dateTime: `${date}T11:00:00-07:00` } };
+}
+
+function passportMessage() {
+  return { id: 'passport', internalDate: String(Date.now()), snippet: 'passport renewal', body: 'passport renewal',
+    payload: { headers: [{ name: 'From', value: 'records@example.com' }] } };
+}
+
+test('midnight end descriptions use the next date while day coverage stays exclusive', () => {
+  const record = eventRecord({ id: 'trip', summary: 'Trip',
+    start: { dateTime: '2026-10-11T10:00:00-07:00' }, end: { dateTime: '2026-10-13T00:00:00-07:00' } }, 'primary', ZONE);
+  assert.equal(record.endDate, '2026-10-12');
+  assert.equal(record.end, '2026-10-13T07:00:00.000Z');
+  assert.match(record.text, /to Tuesday, October 13, 2026 at 12:00 AM/);
+});
+
+test('generation migration preserves legacy connections and evidence and is idempotent', async t => {
+  const store = await testStore(t);
+  await store.saveGoogleConnection({ scope: SCOPES.calendar, refreshToken: 'legacy-sealed', email: 'legacy@example.com',
+    generation: (await store.googleSnapshot()).generation });
+  await store.upsertOrigin('google-calendar', [eventRecord(calendarEvent('kept'), 'primary', ZONE)],
+    (await store.googleSnapshot()).generation);
+  await store.sql('DROP TABLE google_generation');
+  if (store.adapter === 'postgres') await store.sql(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+  const reopened = store.reopen();
+  t.after(() => reopened.close());
+  assert.equal((await reopened.googleConnection()).email, 'legacy@example.com');
+  assert.equal((await reopened.list('calendar'))[0].title, 'kept');
+  assert.equal((await reopened.googleSnapshot()).generation, '0');
+  if (store.adapter === 'postgres') await store.sql(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+  const twice = store.reopen();
+  t.after(() => twice.close());
+  assert.equal((await twice.googleSnapshot()).generation, '0');
+});
+
+test('reconnect clears the old copy and warm workers refresh credentials for the new account', async t => {
+  const { google, remote, store } = await fixture(t);
+  await authorize(google);
+  remote.events = [calendarEvent('first-account', today, 'me@example.com'), calendarEvent('second-account', today, 'second@example.com')];
+  await google.syncCalendar();
+  const other = createGoogle({ config, store, fetch: remote.fetch, log: quietLog });
+  remote.account = 'second@example.com';
+  await authorize(other);
+  assert.deepEqual(await store.list('calendar'), []);
+  assert.equal(await other.covers(today), false);
+  assert.equal(await other.mailFresh(), false);
+  assert.equal((await google.syncCalendar()).ok, true);
+  assert.equal((await store.googleConnection()).email, 'second@example.com');
+  assert.deepEqual((await store.list('calendar')).map(item => item.title), ['second-account']);
+});
+
+test('narrower consent fences an in-flight sync and both success and error metadata', async t => {
+  const { google, remote, store } = await fixture(t);
+  await authorize(google);
+  remote.events = [calendarEvent('withdrawn-calendar')];
+  const held = heldFetch(remote.fetch, url => url.pathname.endsWith('/events'));
+  const oldWorker = createGoogle({ config, store, fetch: held.fetch, log: quietLog });
+  held.enable();
+  const pending = oldWorker.syncCalendar();
+  await held.reached;
+  remote.grantedScope = SCOPES.gmail;
+  await authorize(google);
+  const currentGeneration = (await store.googleSnapshot()).generation;
+  held.release();
+  assert.equal((await pending).ok, false);
+  assert.equal(await google.can('calendar'), false);
+  assert.deepEqual(await store.list('calendar'), []);
+  assert.deepEqual(await store.syncState('google-calendar'), []);
+  assert.equal((await getSchedule(store, today, google)).status, 'unknown');
+  assert.equal(await store.replaceOrigin('google-calendar', [], currentGeneration), false, 'generation alone cannot grant a withdrawn scope');
+  assert.equal(await store.recordSync('google-calendar', { error: 'late' }, currentGeneration), false);
+});
+
+test('disconnect fences live responses and cached fallbacks, then reconnect cannot revive them', async t => {
+  for (const source of ['calendar', 'gmail']) await t.test(source, async t => {
+    const { google, remote, store } = await fixture(t);
+    await authorize(google);
+    remote.events = [calendarEvent('private-calendar')];
+    remote.messages = [passportMessage()];
+    if (source === 'gmail') await google.syncEmail();
+    const held = heldFetch(remote.fetch, url => source === 'calendar' ? url.pathname.endsWith('/events') : url.pathname.endsWith('/messages/passport'));
+    const oldWorker = createGoogle({ config, store, fetch: held.fetch, log: quietLog });
+    // Force live mail lookup while retaining a local match, exercising the error fallback too.
+    oldWorker.mailFresh = async () => false;
+    held.enable();
+    const pending = source === 'calendar' ? getSchedule(store, today, oldWorker) : searchMessages(store, 'passport', oldWorker);
+    const rejected = assert.rejects(pending, /Google connection changed/);
+    await held.reached;
+    await google.disconnect();
+    await authorize(google);
+    held.release();
+    await rejected;
+    assert.deepEqual(await store.list(source === 'calendar' ? 'calendar' : 'email'), []);
+    assert.deepEqual(await store.syncState(), []);
+  });
+});
+
+test('a cached answer read before disconnect is not returned after disconnect', async t => {
+  const { google, remote, store } = await fixture(t);
+  await authorize(google);
+  remote.messages = [passportMessage()];
+  await google.syncEmail();
+  let arrive, release;
+  const reached = new Promise(resolve => { arrive = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  const readingStore = { ...store, async list(source) {
+    const rows = await store.list(source);
+    arrive();
+    await resumed;
+    return rows;
+  } };
+  const pending = searchMessages(readingStore, 'passport', google);
+  const rejected = assert.rejects(pending, /Google connection changed/);
+  await reached;
+  await google.disconnect();
+  release();
+  await rejected;
+});
+
+test('an old invalid refresh response cannot mark the new connection expired or write sync errors', async t => {
+  const { google, remote, store } = await fixture(t);
+  await authorize(google);
+  const held = heldFetch(remote.fetch, url => url.pathname === '/token');
+  const oldWorker = createGoogle({ config, store, fetch: held.fetch, log: quietLog });
+  remote.refreshValid = false;
+  held.enable();
+  const pending = oldWorker.syncCalendar();
+  await held.reached;
+  remote.refreshValid = true;
+  await authorize(google);
+  held.release();
+  assert.equal((await pending).ok, false);
+  assert.equal((await store.googleConnection()).status, 'connected');
+  assert.deepEqual(await store.syncState(), []);
+});
+
+test('a pending OAuth callback cannot undo a disconnect or overwrite a newer connection', async t => {
+  for (const change of ['disconnect', 'reconnect']) await t.test(change, async t => {
+    const { google, remote, store } = await fixture(t);
+    const held = heldFetch(remote.fetch, url => url.pathname.endsWith('/primary'));
+    const oldWorker = createGoogle({ config, store, fetch: held.fetch, log: quietLog });
+    held.enable();
+    const pending = authorize(oldWorker);
+    const rejected = assert.rejects(pending, /Google connection changed/);
+    await held.reached;
+    if (change === 'disconnect') await google.disconnect();
+    else {
+      remote.account = 'newer@example.com';
+      await authorize(google);
+    }
+    held.release();
+    await rejected;
+    assert.equal((await store.googleConnection())?.email, change === 'disconnect' ? undefined : 'newer@example.com');
+    assert.deepEqual(await store.syncState(), []);
+  });
 });

@@ -28,16 +28,18 @@ export function sqliteVoiceStore(db) {
       return db.prepare('SELECT failures FROM caller_pin_failure WHERE caller_hash = ? AND window_start > ?')
         .get(callerHash, Date.now() - windowSeconds * 1000)?.failures ?? 0;
     },
-    recordPinFailure(callerHash, windowSeconds) {
+    // A conditional UPSERT serializes admission across all database connections. A locked
+    // caller produces no returned row, including when the supplied PIN is correct.
+    recordPinAttempt(callerHash, correct, windowSeconds, maxFailures) {
       const now = Date.now();
-      db.prepare(`INSERT INTO caller_pin_failure VALUES (?, 1, ?)
+      return Boolean(db.prepare(`INSERT INTO caller_pin_failure VALUES (?, ?, ?)
         ON CONFLICT(caller_hash) DO UPDATE SET
-          failures = CASE WHEN window_start > ? THEN failures + 1 ELSE 1 END,
-          window_start = CASE WHEN window_start > ? THEN window_start ELSE excluded.window_start END`)
-        .run(callerHash, now, now - windowSeconds * 1000, now - windowSeconds * 1000);
-    },
-    clearPinFailures(callerHash) {
-      db.prepare('DELETE FROM caller_pin_failure WHERE caller_hash = ?').run(callerHash);
+          failures = CASE WHEN excluded.failures = 0 THEN 0
+            WHEN window_start <= ? THEN 1 ELSE failures + 1 END,
+          window_start = CASE WHEN failures = 0 OR window_start <= ? THEN excluded.window_start ELSE window_start END
+        WHERE failures < ? OR window_start <= ?
+        RETURNING failures`).get(callerHash, correct ? 0 : 1, now,
+        now - windowSeconds * 1000, now - windowSeconds * 1000, maxFailures, now - windowSeconds * 1000));
     },
   };
 }
