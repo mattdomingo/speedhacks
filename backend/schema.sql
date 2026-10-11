@@ -31,6 +31,12 @@ CREATE TABLE IF NOT EXISTS google_connection (
   status TEXT NOT NULL CHECK (status IN ('connected', 'reconnect_required')),
   connected_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Retained across disconnects so late OAuth callbacks and reads cannot reuse an old connection.
+CREATE TABLE IF NOT EXISTS google_generation (
+  slot INTEGER PRIMARY KEY CHECK (slot = 1),
+  generation BIGINT NOT NULL DEFAULT 0
+);
+INSERT INTO google_generation VALUES (1, 0) ON CONFLICT (slot) DO NOTHING;
 CREATE TABLE IF NOT EXISTS oauth_state (
   state TEXT PRIMARY KEY,
   verifier TEXT NOT NULL,

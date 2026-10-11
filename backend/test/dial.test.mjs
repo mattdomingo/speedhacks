@@ -9,8 +9,8 @@ import { createServer } from 'node:http';
 import { testStore, TEST_DATABASE_URL, vercelHelpers } from './helpers.mjs';
 import { seedDemo } from '../demo.mjs';
 import { describeHeaders, verifyDialSignature } from '../voice/webhooks.mjs';
-import { smokeObjectMemory } from '../../scripts/smoke-object-memory.mjs';
 import { checkPin } from '../voice/pin.mjs';
+import { smokeObjectMemory } from '../../scripts/smoke-object-memory.mjs';
 
 const config = readConfig({
   DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64), DIAL_WEBHOOK_SECRET: 'w'.repeat(32),
@@ -109,6 +109,60 @@ test('with CALLER_PIN set, spoofed caller ID alone retrieves nothing and guessin
   assert.ok(!JSON.stringify(rejected).includes('4821'));
 });
 
+test('PIN attempt admission is atomic across concurrent store connections', async t => {
+  const store = await testStore(t);
+  const connections = [store, store.reopen(), store.reopen()];
+  t.after(async () => { await Promise.all(connections.slice(1).map(connection => connection.close())); });
+  const caller = 'synthetic-concurrent-caller';
+  const results = await Promise.all(Array.from({ length: 100 }, (_, index) =>
+    checkPin(connections[index % connections.length], '4821', caller, '0000')));
+  assert.equal(results.filter(result => result === 'pin_wrong').length, 5);
+  assert.equal(results.filter(result => result === 'pin_locked').length, 95);
+  assert.equal(await checkPin(connections[1], '4821', caller, '4821'), 'pin_locked');
+  assert.equal(await checkPin(connections[2], '4821', caller), 'pin_locked');
+});
+
+test('PIN resets, missing arguments and expiry preserve the retry budget across restarts', async t => {
+  const store = await testStore(t);
+  const caller = 'synthetic-reset-caller';
+  const attempt = pin => checkPin(store, '4821', caller, pin);
+  for (let index = 0; index < 10; index++) assert.equal(await attempt(), 'pin_missing');
+  for (let index = 0; index < 4; index++) assert.equal(await attempt('0000'), 'pin_wrong');
+  assert.equal(await attempt('4821'), null);
+  for (let index = 0; index < 5; index++) assert.equal(await attempt('0000'), 'pin_wrong');
+  assert.equal(await attempt('4821'), 'pin_locked');
+  const reopened = store.reopen();
+  t.after(() => reopened.close());
+  assert.equal(await checkPin(reopened, '4821', caller, '4821'), 'pin_locked');
+  // Advance this isolated database's failure window without waiting 15 minutes.
+  await store.sql(`UPDATE caller_pin_failure SET window_start = ${store.adapter === 'postgres'
+    ? "now() - interval '16 minutes'" : Date.now() - 16 * 60_000}`);
+  assert.equal(await checkPin(reopened, '4821', caller), 'pin_missing');
+  assert.equal(await checkPin(reopened, '4821', caller, '0000'), 'pin_wrong');
+  assert.equal(await checkPin(reopened, '4821', caller, '4821'), null);
+});
+
+test('simultaneous MCP requests cannot exceed five wrong PIN attempts', async t => {
+  const { url } = await fixture(t, { CALLER_PIN: '4821' });
+  const clients = await Promise.all(Array.from({ length: 3 }, async () => {
+    const client = new Client({ name: 'concurrent-pin-check', version: '0.1.0' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`), { requestInit: { headers: {
+      Authorization: `Bearer ${config.DIAL_MCP_TOKEN}`,
+      'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'inbound',
+    } } }));
+    t.after(() => client.close());
+    return client;
+  }));
+  const results = await Promise.all(Array.from({ length: 30 }, (_, index) =>
+    clients[index % clients.length].callTool({ name: 'find_object', arguments: { object: 'keys', pin: '0000' } })));
+  assert.ok(results.every(result => result.isError && !result.structuredContent));
+  assert.equal(results.filter(result => /not correct/.test(result.content[0].text)).length, 5);
+  assert.equal(results.filter(result => /Too many wrong PIN attempts/.test(result.content[0].text)).length, 25);
+  const correct = await clients[0].callTool({ name: 'find_object', arguments: { object: 'keys', pin: '4821' } });
+  assert.equal(correct.isError, true);
+  assert.match(correct.content[0].text, /Too many wrong PIN attempts/);
+});
+
 test('behind Vercel request helpers, signed webhooks and JSON routes still work', async t => {
   const { store } = await fixture(t);
   const app = createApp(config, store, undefined, { analytics: { toolCall() {}, rejected() {}, sync() {}, dialEvent() {} } });
@@ -135,7 +189,7 @@ test('the MCP smoke client keeps working when the backend requires a PIN', async
   assert.deepEqual(Object.keys(results), ['my keys', 'cellphone', 'wallet']);
 });
 
-test('concurrent PIN guesses are counted before comparison, across instances', async t => {
+test('concurrent PIN guesses respect the failure limit across instances', async t => {
   const store = await testStore(t);
   const second = store.reopen();
   t.after(() => second.close());
