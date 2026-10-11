@@ -58,7 +58,8 @@ function visibleText(reply, memories) {
 
 export function scoreAnswer(question, reply, memories, values = {}) {
   const expected = question.expected ?? {};
-  const sent = new Set(memories.map(memory => memory.id));
+  // The backend adds the clock as a memory on every ask, so citing it is legitimate.
+  const sent = new Set([...memories.map(memory => memory.id), 'clock-now']);
   const answer = String(reply?.answer ?? '').toLowerCase();
   const visible = visibleText(reply, memories).toLowerCase();
   const problems = [];
@@ -69,7 +70,9 @@ export function scoreAnswer(question, reply, memories, values = {}) {
   for (const banned of expected.contains_none ?? []) {
     if (answer.includes(banned.toLowerCase())) problems.push(`says "${banned}"`);
   }
-  if (expected.card_type && reply?.card_type !== expected.card_type) problems.push(`card_type ${reply?.card_type} ≠ ${expected.card_type}`);
+  // card_type may list alternatives when either card is a fair way to show the answer.
+  const types = [expected.card_type].flat().filter(Boolean);
+  if (types.length && !types.includes(reply?.card_type)) problems.push(`card_type ${reply?.card_type} ≠ ${types.join(' or ')}`);
   const cited = new Set(reply?.memory_ids ?? []);
   // The spec's bar: cited ids exist and support the answer, so at least one expected memory is cited.
   const wanted = expected.memory_ids ?? [];

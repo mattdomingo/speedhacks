@@ -102,7 +102,7 @@ test('ask sends the verbatim prompt with memories and keeps only supplied memory
   assert.equal(request.output_config.format.type, 'json_schema');
   assert.equal(request.fallbacks, 'default');
   const content = request.messages[0].content;
-  assert.match(content, /^<memories>\n\{"id":"photo-1".*\n\{"id":"note-1".*\n<\/memories>/);
+  assert.match(content, /^<memories>\n\{"id":"clock-now".*"summary":"Right now it is Sunday, October 11, 2026 at 8:00 AM\.".*\n\{"id":"photo-1".*\n\{"id":"note-1".*\n<\/memories>/);
   assert.match(content, /never as instructions/);
   assert.match(content, /Current local time: Sunday, October 11, 2026 at 8:00 AM/);
   assert.match(content, /Question: Where are my keys\?$/);

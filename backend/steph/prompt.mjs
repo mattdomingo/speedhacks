@@ -44,8 +44,17 @@ function context(memories, now, timeZone) {
   return `<memories>\n${lines.join('\n')}\n</memories>\n\n${UNTRUSTED}\nCurrent local time: ${localTime(now, timeZone)}`;
 }
 
+// The prompt only lets Steph use memories, so the clock is one: without it, "What time is it?"
+// came back "I'm not sure". The phone never sends this id; the app shows it as the clock.
+export const CLOCK_MEMORY_ID = 'clock-now';
+
+export function clockMemory(now, timeZone) {
+  return { id: CLOCK_MEMORY_ID, type: 'note', summary: `Right now it is ${localTime(now, timeZone || 'UTC')}.`,
+    people: [], timestamp: now, source: 'clock', confidence: 1 };
+}
+
 export function askTurn({ question, now, time_zone, memories }) {
-  return `${context(memories, now, time_zone)}\n\nQuestion: ${question}`;
+  return `${context([clockMemory(now, time_zone), ...memories], now, time_zone)}\n\nQuestion: ${question}`;
 }
 
 export function reminderTurn({ now, time_zone }, candidate) {

@@ -140,7 +140,8 @@ test('50 concurrent /ask requests all succeed and never mix memories between req
   for (const { index, reply } of results) {
     assert.equal(reply.status, 200);
     assert.equal(reply.body.answer, `Answer for question ${index}`);
-    assert.deepEqual(reply.body.memory_ids, [`req${index}-a`, `req${index}-b`]);
+    // Each request sees only its own memories plus the shared clock.
+    assert.deepEqual(reply.body.memory_ids, ['clock-now', `req${index}-a`, `req${index}-b`]);
   }
   latencies.sort((a, b) => a - b);
   const pct = p => latencies[Math.min(latencies.length - 1, Math.ceil(p * latencies.length) - 1)].toFixed(0);

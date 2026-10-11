@@ -65,7 +65,7 @@ test('Gemini gets the verbatim system prompt, the same user turn and the card sc
   assert.equal(init.headers['x-goog-api-key'], 'g-key');
   assert.equal(body.systemInstruction.parts[0].text, STEPH_SYSTEM_PROMPT);
   assert.equal(body.contents[0].role, 'user');
-  assert.match(body.contents[0].parts[0].text, /<memories>\n\{"id":"photo-keys"[\s\S]*Question: Where are my keys\?$/);
+  assert.match(body.contents[0].parts[0].text, /<memories>\n\{"id":"clock-now".*\n\{"id":"photo-keys"[\s\S]*Question: Where are my keys\?$/);
   assert.deepEqual(body.generationConfig, { responseMimeType: 'application/json', responseJsonSchema: cardFormat.schema,
     thinkingConfig: { thinkingLevel: 'minimal' } });
 });

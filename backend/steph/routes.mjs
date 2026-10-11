@@ -3,7 +3,7 @@ import { askSchema, embedSchema, remindersSchema } from '../../contracts/index.m
 import { askClaude, createClaude, shapeCard } from './claude.mjs';
 import { askGemini, createGemini, StephBusyError } from './gemini.mjs';
 import { embedTexts } from './embed.mjs';
-import { askTurn, reminderTurn } from './prompt.mjs';
+import { askTurn, clockMemory, reminderTurn } from './prompt.mjs';
 
 export const STEPH_PATHS = ['/embed', '/ask', '/reminders'];
 
@@ -56,7 +56,7 @@ export function stephRoutes(config, { claude, fetch: fetchImpl = fetch, gemini }
   router.post('/ask', async (req, res) => {
     if (!ask) return notConfigured(res);
     const body = askSchema.parse(req.body);
-    const { card, busy } = await answer(askTurn(body), body.memories);
+    const { card, busy } = await answer(askTurn(body), [clockMemory(body.now, body.time_zone), ...body.memories]);
     if (busy) return res.status(503).json({ error: 'Steph is busy right now' });
     if (!card) return res.status(502).json({ error: 'Steph could not answer' });
     res.json(card);
