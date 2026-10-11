@@ -320,6 +320,10 @@ final class AppModel {
                 show(notice: "I couldn't find the demo coffee with Priya.")
                 return
             }
+            if delay != nil, !(await Notifications.requestAuthorization()) {
+                show(notice: "Allow notifications in Settings, or show the demo reminder now.")
+                return
+            }
             if let delay { reminder.fireDate = Date().addingTimeInterval(delay) }
             do {
                 try await store.save(reminder: reminder)
@@ -328,11 +332,9 @@ final class AppModel {
                 return
             }
             if delay != nil {
-                guard await Notifications.requestAuthorization() else {
-                    show(notice: "Allow notifications in Settings, or show the demo reminder now.")
-                    return
+                if !(await Notifications.schedule(reminder)) {
+                    show(notice: "I couldn't schedule the demo reminder. Please try again.")
                 }
-                await Notifications.schedule(reminder)
             } else {
                 show(reminder)
             }

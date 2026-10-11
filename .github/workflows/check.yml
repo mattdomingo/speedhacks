@@ -27,6 +27,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
+      - run: npm run demo:medicine
       - run: npm test
       - run: npm run keewano:codegen -- --check
       - run: npm test
