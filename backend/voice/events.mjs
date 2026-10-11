@@ -2,6 +2,21 @@ import { safeMessage } from '../log.mjs';
 
 const MISSED = new Set(['no-answer', 'busy', 'failed', 'canceled']);
 const TURN_CHARS = 500;
+const SPEAKERS = { user: 'user', agent: 'agent', 'transfer target': 'transfer_target' };
+
+// Live calls return transcriptTurns as null and only the flat "User: …\nAgent: …" text, where a
+// turn can run over several lines. Unintelligible-audio markers are not the patient's words.
+export function turnsFromText(transcript) {
+  const turns = [];
+  for (const line of String(transcript ?? '').split('\n')) {
+    const match = line.match(/^(User|Agent|Transfer target):\s?(.*)$/i);
+    if (match) turns.push({ speaker: SPEAKERS[match[1].toLowerCase()], text: match[2] });
+    else if (turns.length) turns.at(-1).text += `\n${line}`;
+  }
+  return turns
+    .map(turn => ({ ...turn, text: turn.text.replace(/\(unintelligible audio\)/gi, '').trim() }))
+    .filter(turn => turn.text);
+}
 
 // Side effects of verified Dial webhook events. Every write is keyed by a Dial id and inserted
 // with "ignore if present", so redelivered or concurrent duplicates change nothing twice.
@@ -36,7 +51,8 @@ export function createDialEvents(config, store, { dial = null, reminders, patien
       duration: call.duration ?? null, timestamp: new Date(started).toISOString(),
       text: `${call.direction === 'inbound' ? 'They called' : 'Steph called'} (${call.duration ?? 0} s).`, demo: false,
     });
-    const turns = Array.isArray(call.transcriptTurns) ? call.transcriptTurns : [];
+    const turns = Array.isArray(call.transcriptTurns) && call.transcriptTurns.length
+      ? call.transcriptTurns : turnsFromText(call.transcript);
     for (const [index, turn] of turns.entries()) {
       if (turn?.speaker !== 'user' || typeof turn.text !== 'string' || !turn.text.trim()) continue;
       await store.put({

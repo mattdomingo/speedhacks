@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
 import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
+import { turnsFromText } from '../voice/events.mjs';
 
 const PATIENT = '+14155550123';
 const OTHER = '+14155550999';
@@ -176,4 +177,25 @@ test('burst: 500 deliveries in under 10 s with ~30% duplicates are all acknowled
   assert.equal(new Set((await store.list('call')).map(record => record.text)).size, unique);
   assert.equal((await store.list('call')).length, unique);
   assert.ok(dial.getCalls >= unique && dial.getCalls <= unique + 150, `${dial.getCalls} transcript fetches`);
+});
+
+test('live-shaped calls (transcriptTurns null, flat transcript) still store the patient\'s own words', async t => {
+  const { url, store, dial } = await fixture(t);
+  dial.calls.live = {
+    id: 'live', from: STEPH, to: PATIENT, direction: 'outbound', duration: 35, createdAt: '2026-10-11T21:39:20Z',
+    transcriptTurns: null,
+    transcript: 'User: Hello?\nAgent: Hi, it’s Steph, your AI assistant.\nYour reminder is:\n“Drink a glass of water.”\n' +
+      'User: (unintelligible audio)\nUser: Yes.\nI got it, thanks.\nAgent: Bye!',
+  };
+  assert.equal((await deliver(url, transcribed('live'))).status, 200);
+  const words = (await store.list('call')).filter(record => record.call_id === 'live').map(record => record.text);
+  assert.deepEqual(words, ['Hello?', 'Yes.\nI got it, thanks.']);
+});
+
+test('turnsFromText keeps multi-line turns and drops unintelligible markers', () => {
+  assert.deepEqual(turnsFromText('Agent: Hi!\nUser: (unintelligible audio)\nUser: Where are my keys?\nAgent: On the counter.\nAnd your wallet.'), [
+    { speaker: 'agent', text: 'Hi!' }, { speaker: 'user', text: 'Where are my keys?' },
+    { speaker: 'agent', text: 'On the counter.\nAnd your wallet.' },
+  ]);
+  assert.deepEqual(turnsFromText(null), []);
 });
