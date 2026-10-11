@@ -407,7 +407,7 @@ test('setup appends only missing secrets to an existing .env', () => {
     writeFileSync(join(dir, '.env'), 'DIAL_MCP_TOKEN=keep\nCAMERA_TOKEN=keep2');
     execFileSync(process.execPath, [join(import.meta.dirname, '../../scripts/setup.mjs')], { cwd: dir });
     const env = readFileSync(join(dir, '.env'), 'utf8');
-    assert.match(env, /^DIAL_MCP_TOKEN=keep\nCAMERA_TOKEN=keep2\nADMIN_TOKEN=[0-9a-f]{64}\nGOOGLE_TOKEN_KEY=[0-9a-f]{64}\nCRON_SECRET=[0-9a-f]{64}\n$/);
+    assert.match(env, /^DIAL_MCP_TOKEN=keep\nCAMERA_TOKEN=keep2\nADMIN_TOKEN=[0-9a-f]{64}\nGOOGLE_TOKEN_KEY=[0-9a-f]{64}\nCRON_SECRET=[0-9a-f]{64}\nRECALL_APP_TOKEN=[0-9a-f]{64}\n$/);
     execFileSync(process.execPath, [join(import.meta.dirname, '../../scripts/setup.mjs')], { cwd: dir });
     assert.equal(readFileSync(join(dir, '.env'), 'utf8'), env);
   } finally {

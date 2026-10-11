@@ -25,6 +25,7 @@
   },
   "homepage": "https://github.com/mattdomingo/speedhacks#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
     "@keewano/node-sdk": "1.3.0-207",
     "@modelcontextprotocol/server": "^2.3.1",
     "@vercel/functions": "^3.9.11",

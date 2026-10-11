@@ -6,7 +6,9 @@ Engineers and coding agents: start with [AGENTS.md](AGENTS.md) for shared workin
 
 Production API: **https://recall-kappa-nine.vercel.app**. Check [health](https://recall-kappa-nine.vercel.app/health); connect Dial to `https://recall-kappa-nine.vercel.app/mcp`. This is an API backend; `/` returns 404.
 
-The camera observer recognizes keys, a phone, and a wallet on a fixed tabletop and remembers their last confirmed locations. Configure a paid Gemini project on the backend to enable recognition. Without a key, uploads still work and report `not_configured`. Google Calendar and Gmail connect through OAuth and sync into the same database (see [Google connection](#google-connection)); real Dial calls remain a separate integration.
+**iPhone app:** [Recall for iPhone](ios/README.md) is the Steph app: one orb, cards that rise from it, on-device memory, and proactive reminders. It talks to this service's [Steph API](#steph-api-ios-app).
+
+The camera observer recognizes keys, a phone, and a wallet on a fixed tabletop and remembers their last confirmed locations. Configure a paid Gemini project on the backend to enable recognition. Without a key, uploads still work and report `not_configured`. Google accounts and Dial calls remain separate integrations.
 
 ## Architecture
 
@@ -120,6 +122,24 @@ How retrieval works during a call:
 - Tools answer from the database while the copy is fresh (synced within twice `GOOGLE_SYNC_MINUTES`, at least 30 minutes). Otherwise, and for dates outside the window or searches with no stored match, they ask Google inside the request under one `GOOGLE_LIVE_TIMEOUT_MS` deadline (default 1.5 s). Live mail search stays inside `GMAIL_SYNC_QUERY`. Nothing runs after the response (DEC-004).
 - Dates use `TIMEZONE`, else the Google calendar's zone, else UTC, including daylight-saving changes. `get_schedule`'s description tells the voice model today's date in that zone.
 - Email text is the sender, subject and Gmail's snippet (at most 300 characters), never full bodies. The refresh token is encrypted with AES-256-GCM; Google writes and lookup responses are bound to the active connection and granted scopes, including across disconnects and reconnections.
+
+## Steph API (iOS app)
+
+The Recall iOS app (Steph) uses three JSON endpoints on the same service. Each requires `Authorization: Bearer RECALL_APP_TOKEN`; while that variable is empty they return 503 `{"error":"Steph is not configured"}`, so existing deployments are unaffected.
+
+| Endpoint | Body | Response |
+| --- | --- | --- |
+| `POST /embed` | `{texts: 1–64 strings ≤2000 chars, input_type?: "document"\|"query"}` | `{model, dimensions, embeddings}` in input order, from Voyage AI; 503 without `VOYAGE_API_KEY` |
+| `POST /ask` | `{question, now, time_zone?, memories: ≤24}` | `{answer, card_type, memory_ids, buttons}`; 503 without `ANTHROPIC_API_KEY` |
+| `POST /reminders` | `{now, time_zone?, candidates: 1–5 of {id, kind, title, when?, person?, memories: 1–12}}` | `{reminders: [{candidate_id, answer, card_type, memory_ids, buttons}]}`; failed candidates are omitted |
+
+A memory is `{id, type: photo|event|person|place|note, summary, people, place?, timestamp, source, confidence}`. `/ask` and `/reminders` send Steph's product system prompt verbatim (`backend/steph/prompt.mjs`) to Claude with structured JSON output, then keep only memory IDs the phone supplied and at most two buttons. A declined, truncated or failed answer returns 502 `{"error":"Steph could not answer"}`; the app then answers on device.
+
+Memories live on the phone. Each request carries only the snippets needed for one answer (at most 24), and the backend stores none of them: no schema change, no pgvector. Photos never leave the phone; only short text descriptions do.
+
+**`RECALL_APP_TOKEN` is a demo restriction, not user authentication.** It is a shared secret compiled into the app binary, like the caller-number allowlist. Before real personal records, add per-user authentication (for example, verified Sign in with Apple sessions) and rate limits.
+
+To enable Steph in production, set `RECALL_APP_TOKEN` (`openssl rand -hex 32`, different from the other tokens), `ANTHROPIC_API_KEY` and optionally `VOYAGE_API_KEY` in the Vercel project's Production environment, redeploy, and give the same app token to the iOS build. Check that an unauthenticated `POST /ask` returns 401.
 
 ## Steph's phone line and reminders
 
@@ -244,6 +264,11 @@ For schema or configuration changes to the existing deployment:
 | `STEPH_NUMBER` | Backend | Steph's Dial line; defaults to `+12408962183` |
 | `KEEWANO_API_KEY` | Backend | Optional Keewano analytics; empty disables it |
 | `PORT` | Local server/Compose | Default `3000`; Vercel manages its service port |
+| `RECALL_APP_TOKEN` | Backend and iOS app | At least 32 characters, distinct from the other tokens; empty disables Steph's endpoints |
+| `ANTHROPIC_API_KEY` | Backend only | Claude for `/ask` and `/reminders`; empty returns 503 |
+| `STEPH_MODEL` | Backend only | Defaults to `claude-opus-5-5` |
+| `VOYAGE_API_KEY` | Backend only | Voyage AI embeddings for `/embed`; empty returns 503 |
+| `EMBED_MODEL` | Backend only | Defaults to `voyage-3.5-lite` |
 
 To use `vercel dev -L`, put local test database credentials and application secrets in `.env`. Use the port printed by Vercel for `/health`, `/mcp`, and `BACKEND_URL`. This exercises the same service routing as deployment without creating cloud resources. `npm start` still runs the backend directly for SQLite development.
 

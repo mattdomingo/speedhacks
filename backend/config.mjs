@@ -55,13 +55,21 @@ export function readConfig(env = process.env) {
     KEEWANO_ENDPOINT: optional(z.url({ protocol: /^https$/ })),
     // Only on a server with a persistent disk; unset keeps unsent batches in memory.
     KEEWANO_DATA_DIR: optional(z.string().min(1)),
+    // Steph iOS app: a shared app secret (demo restriction) gates /embed, /ask and /reminders.
+    RECALL_APP_TOKEN: optional(secret),
+    // Backend-only provider keys; unset makes the matching Steph endpoint return 503.
+    ANTHROPIC_API_KEY: optional(z.string().trim().min(1)),
+    STEPH_MODEL: z.string().trim().min(1).default('claude-opus-5-5'),
+    VOYAGE_API_KEY: optional(z.string().trim().min(1)),
+    EMBED_MODEL: z.string().trim().min(1).default('voyage-3.5-lite'),
   }).parse({ ...env, DATABASE_URL: env.DATABASE_URL || undefined });
   if (env.VERCEL === '1' && !config.DATABASE_URL) {
     throw new Error('Set DATABASE_URL on Vercel; local SQLite is not durable there');
   }
-  const secrets = [config.DIAL_MCP_TOKEN, config.CAMERA_TOKEN, config.ADMIN_TOKEN, config.DIAL_WEBHOOK_SECRET, config.CRON_SECRET].filter(Boolean);
+  const secrets = [config.DIAL_MCP_TOKEN, config.CAMERA_TOKEN, config.ADMIN_TOKEN, config.DIAL_WEBHOOK_SECRET, config.CRON_SECRET,
+    config.RECALL_APP_TOKEN].filter(Boolean);
   if (new Set(secrets).size !== secrets.length) {
-    throw new Error('Use separate Dial, camera, admin, webhook and cron secrets');
+    throw new Error('Use separate Dial, camera, admin, webhook, cron and app secrets');
   }
   // Google is all-or-nothing so a half-configured deployment fails at boot, not mid-call.
   const google = GOOGLE_KEYS.filter(key => config[key]);

@@ -1,0 +1,11 @@
+// Copy to Local.xcconfig (gitignored) and fill in.
+RECALL_TEAM = YOUR_TEAM_ID
+// A bundle ID your team can sign, e.g. com.yourname.recall
+RECALL_BUNDLE_ID = com.speedhacks.recall
+// Must match RECALL_APP_TOKEN on the backend (at least 32 characters).
+RECALL_APP_TOKEN =
+// Point at a local backend instead (simulator can reach the Mac's loopback):
+// RECALL_API_BASE_URL = http:/$()/127.0.0.1:3000
+// Free personal teams cannot use Sign in with Apple; uncomment to drop the
+// entitlement. The app then keeps a local-only profile.
+// RECALL_ENTITLEMENTS = Recall/Recall-NoSIWA.entitlements
