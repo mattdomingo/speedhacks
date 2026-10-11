@@ -269,6 +269,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** A caller who forgot the subject cannot supply search keywords, and last week's plans may be outside the synced calendar window. Steph offers recent mail and date-based recall, without inferring attendance or what someone forgot/completed. Tool descriptions provide current local relative-date boundaries. No new service, scope, storage schema or dependency is needed. The deployed Dial instruction and cached tool schema must be refreshed separately; local tool tests do not prove voice behavior.
 - **Sources / validation:** `contracts/index.mjs`, `backend/digital/index.mjs`, `backend/voice/`, `backend/test/google.test.mjs`; acceptance steps in the README Google connection section.
 
+### DEC-027 — Isolate medicine reminder demos from real delivery
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / iOS app owner and Engineer 1; project owner requested both demo surfaces.
+- **Decision:** Add a fictional medicine reminder to the existing iPhone demo card/local-notification flow and an offline phone walkthrough (`npm run demo:medicine`) using the real reminder service with a fake Dial client and temporary SQLite. Both are explicitly labeled demo. The app uses the existing promise reminder kind and Thanks action; it records no medication completion.
+- **Reason and consequences:** A repeatable demo needs no paid calls, credentials, new service or database migration. The phone script advances its own clock and prints scripted dialogue; it does not prove live Dial audio, SMS delivery or notification behavior on a physical phone. App and phone demo state remain separate. Recurring medication schedules and adherence tracking are out of scope.
+- **Sources / validation:** `scripts/demo-medicine-reminder.mjs` includes dispatch and fallback assertions; `ios/RecallTests/RecallTests.swift` covers notification content, storage and cleanup; `ios/RecallUITests/WalkthroughTests.swift` covers the demo card. Usage is in the root and iOS READMEs.
+
 ### DEC-028 — Pair iOS to existing shared memory reads
 
 - **Date / status / responsible:** 2026-10-11 / Accepted; amends [DEC-024](#dec-024--stephs-app-keeps-memory-on-the-phone-the-backend-only-answers) / iOS and backend repair, requested by the project owner after wrong and empty app answers.

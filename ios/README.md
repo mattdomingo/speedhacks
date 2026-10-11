@@ -54,6 +54,12 @@ Demo mode loads seeded memories, dated relative to today, so the live demo never
 3. Tap the mic: "Where are my keys?" Tap again when done. The keys card has the photo, and "Not there" makes Steph look again.
 4. "Who's Sam again?" The person card shows what's worth remembering, when you last saw him, and the promise you forgot.
 
+### Medicine reminder demo
+
+Settings → **Demo memories** → **Show medicine reminder** displays and speaks the fictional reminder immediately. **Medicine reminder in 10 seconds** schedules a local notification; allow notifications, then lock the phone or go home and tap the notification to open its card. The card and notification say Demo. **Thanks!** dismisses it; it does not record that medicine was taken. This is a one-off demo, not a recurring medication schedule.
+
+For the separate simulated phone-call flow, run `npm run demo:medicine` from the repository root. The two demos do not synchronize.
+
 Closing line: *"You can't ask about what you forgot. Steph can."*
 
 The bundled demo photo (Unsplash, see `Recall/Resources/CREDITS.md`) shows keys on a wooden table with no fruit bowl. For the demo, replace `Recall/Resources/Assets.xcassets/DemoKeys.imageset/DemoKeys.jpg` with a photo of your own keys next to a fruit bowl.

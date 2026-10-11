@@ -201,6 +201,7 @@ final class AppModel {
         let retrieval = await retriever.retrieve(question, demoOnly: demoMode, excluding: excluded)
         var person = retrieval.mentionedPeople.first
         var personMemories = person == nil ? [] : (try? await store.memories(forPerson: person!)) ?? []
+        guard answerGeneration == generation, case .thinking(let current) = stage, current == question else { return }
         let period = Retriever.timeRange(in: question, now: started)
         personMemories = personMemories.filter {
             $0.isDemo == demoMode && !excluded.contains($0.id) && Retriever.matchesTimeRange($0, range: period)
@@ -212,13 +213,13 @@ final class AppModel {
             do {
                 let remote = try await client.askConnected(question: question, memories: Array(pool.prefix(20)),
                                                            credentials: credentials, excluding: excluded)
-                guard answerGeneration == generation else { return }
+                guard answerGeneration == generation, case .thinking(let current) = stage, current == question else { return }
                 let shared = try remote.memories()
                 pool = Self.unique(shared + pool)
                 reply = remote.answer
                 connectionStatus = "Connected memories + this phone"
             } catch {
-                guard answerGeneration == generation else { return }
+                guard answerGeneration == generation, case .thinking(let current) = stage, current == question else { return }
                 connectionStatus = StephClient.connectionMessage(for: error)
                 let card = CardContent.answer(AnswerCardModel(kind: .answer, answer: connectionStatus,
                     closest: nil, howIKnow: nil, sourceLine: "LOOKUP UNAVAILABLE", buttons: ["Okay"], memoryIDs: []))
@@ -229,6 +230,7 @@ final class AppModel {
             do {
                 reply = try await client.ask(question: question, memories: Array(pool.prefix(20)))
             } catch {
+                guard answerGeneration == generation, case .thinking(let current) = stage, current == question else { return }
                 reply = LocalBrain.answer(question: question, retrieval: retrieval, personMemories: personMemories)
                 show(notice: "Cloud answers unavailable. Using memories on this phone only.")
             }
@@ -352,19 +354,30 @@ final class AppModel {
         }
     }
 
-    /// Demo: show Priya's card now, or buzz the phone after a delay.
-    func triggerDemoReminder(after delay: TimeInterval? = nil) {
+    /// Demo: show a seeded reminder now, or buzz the phone after a delay.
+    func triggerDemoReminder(medicine: Bool = false, after delay: TimeInterval? = nil) {
         Task {
             if !demoMode { await setDemoMode(true) }
-            guard var reminder = await proactive.demoReminder() else {
+            let selected = medicine ? DemoSeed.medicineReminder() : await proactive.demoReminder()
+            guard var reminder = selected else {
                 show(notice: "I couldn't find the demo coffee with Priya.")
                 return
             }
-            if let delay {
-                reminder.fireDate = Date().addingTimeInterval(delay)
-                try? await store.save(reminder: reminder)
-                _ = await Notifications.requestAuthorization()
-                await Notifications.schedule(reminder)
+            if delay != nil, !(await Notifications.requestAuthorization()) {
+                show(notice: "Allow notifications in Settings, or show the demo reminder now.")
+                return
+            }
+            if let delay { reminder.fireDate = Date().addingTimeInterval(delay) }
+            do {
+                try await store.save(reminder: reminder)
+            } catch {
+                show(notice: "I couldn't save the demo reminder. Please try again.")
+                return
+            }
+            if delay != nil {
+                if !(await Notifications.schedule(reminder)) {
+                    show(notice: "I couldn't schedule the demo reminder. Please try again.")
+                }
             } else {
                 show(reminder)
             }

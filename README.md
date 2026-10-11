@@ -152,6 +152,12 @@ Memories live on the phone. Each request carries only the snippets needed for on
 
 To enable Steph in production, set `RECALL_APP_TOKEN` (`openssl rand -hex 32`, different from the other tokens), `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`, and optionally `VOYAGE_API_KEY` in the Vercel project's Production environment, redeploy, and give the same app token to the iOS build. Check that an unauthenticated `POST /ask` returns 401.
 
+## Medicine reminder demo
+
+Run `npm run demo:medicine` for an offline terminal walkthrough using the real reminder service, a temporary SQLite database and a fake Dial client. It advances a simulated clock, shows sample call dialogue, and checks both an answered call and a missed call with one fallback text. It does not load `.env`, send anything, or write production data. The printed dialogue is scripted, not Dial-generated audio. An answered call never means medicine was taken.
+
+The [iPhone demo](ios/README.md#medicine-reminder-demo) has **Show medicine reminder** and **Medicine reminder in 10 seconds** controls under Settings → Demo memories. These are separate demo flows; this does not add recurring medication schedules or adherence tracking.
+
 ## Steph's phone line and reminders
 
 Steph's Dial number is **+1 240 896 2183** (Dial nickname `Steph`, default `STEPH_NUMBER`). Its inbound instruction is `backend/voice/instructions.txt`. When configured, calling it reaches Steph; reminder calls and texts come from it. A real hosted reminder call and SMS delivery still need separate validation.

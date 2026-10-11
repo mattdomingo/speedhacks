@@ -84,6 +84,16 @@ struct SettingsSheet: View {
                             model.triggerDemoReminder()
                         }
                         .buttonStyle(.pill(.secondary))
+                        Button("Show medicine reminder") {
+                            dismiss()
+                            model.triggerDemoReminder(medicine: true)
+                        }
+                        .buttonStyle(.pill(.secondary))
+                        Button("Medicine reminder in 10 seconds") {
+                            dismiss()
+                            model.triggerDemoReminder(medicine: true, after: 10)
+                        }
+                        .buttonStyle(.pill(.secondary))
                         Button("Buzz me in 10 seconds") {
                             dismiss()
                             model.triggerDemoReminder(after: 10)

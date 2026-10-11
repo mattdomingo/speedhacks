@@ -85,6 +85,23 @@ final class WalkthroughTests: XCTestCase {
         attach(app, "07-memory-connection")
     }
 
+    func testMedicineDemoCard() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-RecallInMemoryStore", "-RecallDemo", "-RecallSkipOnboarding"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 10))
+        app.buttons["Settings"].tap()
+        let medicineReminder = app.buttons["Show medicine reminder"]
+        for _ in 0..<5 where !medicineReminder.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(medicineReminder.isHittable)
+        medicineReminder.tap()
+        XCTAssertTrue(app.staticTexts["This is your demo reminder to take your medicine."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["DEMO · FICTIONAL REMINDER"].exists)
+        attach(app, "medicine-demo")
+        app.buttons["Thanks!"].tap()
+        XCTAssertTrue(app.textFields["Type to Steph"].waitForExistence(timeout: 5))
+    }
+
     func testOnboardingScreens() {
         let app = XCUIApplication()
         app.launchArguments = ["-RecallInMemoryStore", "-phase", "signUp"]
