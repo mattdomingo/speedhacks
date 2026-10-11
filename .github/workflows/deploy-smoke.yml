@@ -1,0 +1,30 @@
+name: Deployment smoke
+# Probes the production domain after Vercel reports a successful production deployment, or on
+# demand. Read-only and credential-free: liveness, authentication on protected routes, and 404
+# at /. Preview URLs sit behind Vercel Deployment Protection, so only production is probed.
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Backend origin to probe
+        required: false
+        default: https://recall-kappa-nine.vercel.app
+permissions:
+  contents: read
+jobs:
+  smoke:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' &&
+       startsWith(github.event.deployment_status.environment, 'Production'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.15.0
+      - name: Probe the deployed backend
+        env:
+          SMOKE_URL: ${{ inputs.url || 'https://recall-kappa-nine.vercel.app' }}
+        run: node scripts/smoke-deploy.mjs "$SMOKE_URL"

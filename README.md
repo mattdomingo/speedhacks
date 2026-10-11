@@ -243,6 +243,8 @@ npm test
 python3 -m unittest discover -s camera -p 'test_*.py'
 ```
 
+After every successful Vercel production deployment, the **Deployment smoke** workflow probes the production domain without credentials: `/health`, a 401 or 503 on every protected route, and 404 at `/`. Run it on demand from the Actions tab, or locally with `node scripts/smoke-deploy.mjs https://recall-kappa-nine.vercel.app`. It proves liveness and authentication, not Google, Dial or recognition.
+
 To run the backend suite against a disposable Postgres database:
 
 ```sh
