@@ -83,3 +83,24 @@ export function normalizeTime(value) {
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
+
+// The memory sink Google sources write through (createGoogle({ memories })). Google data belongs to
+// the household owner (DEC-016, DEC-020); with no owner yet there is nobody to file it under.
+export function ownerMemorySink(store, now = Date.now) {
+  const owner = async () => store.ownerUser();
+  const stamp = () => new Date(now()).toISOString();
+  return {
+    async replaceSource(source, records) {
+      const user = await owner();
+      return user ? store.replaceSource(user.id, source, records, stamp()) : 0;
+    },
+    async upsert(records) {
+      const user = await owner();
+      return user ? store.upsertMemories(user.id, records, stamp()) : 0;
+    },
+    async deleteSource(prefix) {
+      const user = await owner();
+      return user ? store.deleteSourcePrefix(user.id, prefix) : 0;
+    },
+  };
+}

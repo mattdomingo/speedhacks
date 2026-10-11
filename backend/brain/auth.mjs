@@ -139,7 +139,9 @@ export function createAuth({ config, store, dial, google, now = Date.now, fetch:
           name: email.split('@')[0] }, stamp);
       }
       // One Google account per deployment (DEC-016): its data serves the person who connected it,
-      // or the patient a caregiver later links.
+      // or the patient a caregiver later links. A new account's data never mixes with the last one's.
+      const previous = await store.ownerUser();
+      if (previous && previous.id !== user.id) await store.deleteSourcePrefix(previous.id, 'google-');
       if (user.role !== 'caregiver') await store.setOwner(user.id, stamp);
       if (intent.mode === 'link') return { linked: true, user };
       const loginCode = randomBytes(24).toString('base64url');
