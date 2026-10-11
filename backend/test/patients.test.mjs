@@ -100,6 +100,25 @@ test('each patient sees only their own records through every memory tool', async
   assert.match(text(await b.callTool({ name: 'who_is', arguments: { name: 'my son' } })), /Diego/);
 });
 
+test('live people and caregiver lookups ignore retained fixtures without deleting them', async t => {
+  const { store, connect } = await fixture(t, { DEMO_MODE: 'false' });
+  const client = await connect(as(A));
+  for (const [name, args, source, record] of [
+    ['who_is', { name: 'Sam' }, 'person', { name: 'Sam', text: 'Sam is a real contact.' }],
+    ['who_is', { name: 'Priya' }, 'note', { name: 'Priya', text: 'A real note about Priya.' }],
+    ['care_instructions', { topic: 'pills' }, 'caregiver', { topic: 'pills', text: 'A real saved caregiver note.' }],
+  ]) {
+    const fixtures = await store.list(source);
+    const lookup = async () => (await client.callTool({ name, arguments: args })).structuredContent;
+    assert.deepEqual((await lookup()).evidence, [], `${source} fixtures cannot answer a live question`);
+    await store.put({ id: `real-${source}`, source, timestamp: new Date().toISOString(), demo: false, ...record });
+    const result = await lookup();
+    assert.equal(result.status, 'supported');
+    assert.deepEqual(result.evidence.map(item => item.id), [`real-${source}`]);
+    assert.deepEqual((await store.list(source)).filter(item => item.demo), fixtures, 'fixtures stay stored');
+  }
+});
+
 test('missing, empty, template, malformed and unknown caller headers get a polite refusal and no data', async t => {
   const { connect } = await fixture(t);
   for (const headers of [
