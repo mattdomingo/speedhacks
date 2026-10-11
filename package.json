@@ -9,8 +9,11 @@
     "camera": "node --env-file-if-exists=.env scripts/camera.mjs",
     "test": "node --test backend/test/*.test.mjs",
     "db:init": "node --env-file-if-exists=.env scripts/init-db.mjs",
+    "seed:demo": "node --env-file-if-exists=.env scripts/seed-demo.mjs",
+    "eval:golden": "node --env-file-if-exists=.env scripts/eval-golden.mjs",
     "google": "node --env-file-if-exists=.env scripts/google.mjs",
-    "keewano:codegen": "node --disable-warning=ExperimentalWarning scripts/keewano-codegen.mjs"
+    "keewano:codegen": "node --disable-warning=ExperimentalWarning scripts/keewano-codegen.mjs",
+    "dial:connect": "node --env-file-if-exists=.env scripts/dial-connect.mjs"
   },
   "repository": {
     "type": "git",

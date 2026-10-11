@@ -28,6 +28,10 @@ function fakeDial() {
       return { id: `call-${dial.calls.length}` };
     },
     async getCall(id) { return { id, status: dial.callStatus[id] }; },
+    // Dial's view of calls actually placed (for lookups after an ambiguous failure).
+    placed: [], lookups: 0,
+    async listCalls() { dial.lookups++; return [...dial.placed].reverse(); },
+    async listMessages() { return []; },
     async sendText(args) {
       dial.texts.push(args);
       if (dial.failText) throw dial.failText;
@@ -130,7 +134,8 @@ test('reminder requests that cannot be honored come back as spoken errors; remin
   }
   const { url: offUrl, store } = await fixture(t, { DIAL_API_KEY: undefined });
   const off = await connect(t, offUrl, onCall());
-  assert.deepEqual((await off.listTools()).tools.map(tool => tool.name), ['get_schedule', 'search_messages', 'find_object']);
+  assert.deepEqual((await off.listTools()).tools.map(tool => tool.name),
+    ['get_schedule', 'search_messages', 'find_object', 'who_is', 'care_instructions']);
   // Without Dial, webhooks never read the reminders table, which may not exist yet.
   store.reminderByCall = () => { throw new Error('reminders table read'); };
   assert.equal((await webhook(offUrl, ended('call-x', 'completed'))).status, 200);
@@ -174,9 +179,9 @@ test('dispatch is cron-authenticated and calls once per due reminder', async t =
   assert.equal((await fetch(`${url}/cron/dial-reminders`, { headers: { Authorization: `Bearer ${config.DIAL_MCP_TOKEN}` } })).status, 401);
   const client = await connect(t, url, onCall());
   await client.callTool({ name: 'set_reminder', arguments: { text: 'Take the <b>blue</b> pill', in_minutes: 5 } });
-  assert.deepEqual(await (await dispatch(url)).json(), { called: 0, texted: 0, failed: 0, settled: 0 });
+  assert.deepEqual(await (await dispatch(url)).json(), { called: 0, texted: 0, failed: 0, settled: 0, unconfirmed: 0 });
   clock.now += 5 * 60_000;
-  assert.deepEqual(await (await dispatch(url)).json(), { called: 1, texted: 0, failed: 0, settled: 0 });
+  assert.deepEqual(await (await dispatch(url)).json(), { called: 1, texted: 0, failed: 0, settled: 0, unconfirmed: 0 });
   assert.equal((await (await dispatch(url)).json()).called, 0);
   assert.equal(dial.calls.length, 1);
   const [call] = dial.calls;
@@ -232,15 +237,16 @@ test('text reminders send once and are never retried after a failure', async t =
   assert.equal((await store.upcomingReminders(PATIENT)).length, 0);
 });
 
-test('transient call failures retry with the same idempotency key, then give up', async t => {
+test('definite transient refusals look the call up, then retry with the same key, then give up', async t => {
   const { url, dial, clock } = await fixture(t);
   const client = await connect(t, url, onCall());
   await client.callTool({ name: 'set_reminder', arguments: { text: 'Doctor at 3', in_minutes: 1 } });
-  dial.failCall = Object.assign(new Error('Dial POST calls failed with 503'), { status: 503 });
+  dial.failCall = Object.assign(new Error('Dial POST calls failed with 503 (unavailable)'), { status: 503, ambiguous: false });
   clock.now += 60_000;
   await dispatch(url);
   await dispatch(url);
   assert.equal(dial.calls.length, 1, 'a held lease blocks an immediate retry');
+  assert.equal(dial.lookups, 1, 'Dial is asked whether the call exists before any retry');
   for (let i = 0; i < 4; i++) {
     clock.now += 3 * 60_000;
     await dispatch(url);

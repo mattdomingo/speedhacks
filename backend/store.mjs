@@ -53,6 +53,7 @@ export function openStore(dataDir) {
     latestFrame() {
       return db.prepare('SELECT timestamp, jpeg FROM latest_frame WHERE slot = 1').get();
     },
+    ping() { db.prepare('SELECT 1').get(); },
     close() { db.close(); },
   };
 }

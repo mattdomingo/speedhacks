@@ -16,11 +16,43 @@ export function sqliteVoiceStore(db) {
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS reminders_by_status ON reminders (status, due_at);
+    CREATE TABLE IF NOT EXISTS dial_event_handled (id TEXT PRIMARY KEY, handled_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS caregiver_message (
+      id TEXT PRIMARY KEY, patient_number TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('alert', 'summary')),
+      local_date TEXT NOT NULL, status TEXT NOT NULL, outcome TEXT, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS caregiver_message_by_patient ON caregiver_message (patient_number, kind, created_at);
   `);
   const cutoff = days => new Date(Date.now() - days * 86_400_000).toISOString();
   return {
     pruneDialEvents(retentionDays) {
+      db.prepare('DELETE FROM dial_event_handled WHERE handled_at < ?').run(cutoff(retentionDays));
       return db.prepare('DELETE FROM dial_event WHERE received_at < ?').run(cutoff(retentionDays)).changes;
+    },
+    // A delivery's side effects completed; redeliveries of the same event id are then skipped.
+    dialEventHandled(id) {
+      return Boolean(db.prepare('SELECT 1 FROM dial_event_handled WHERE id = ?').get(id));
+    },
+    markDialEventHandled(id) {
+      db.prepare('INSERT OR IGNORE INTO dial_event_handled VALUES (?, ?)').run(id, new Date().toISOString());
+    },
+    // Claims the patient's one summary for a local day; false when it was already claimed.
+    claimCaregiverSummary(patientNumber, localDate, now) {
+      return db.prepare(`INSERT OR IGNORE INTO caregiver_message VALUES (?, ?, 'summary', ?, 'sending', NULL, ?)`)
+        .run(`summary:${patientNumber}:${localDate}`, patientNumber, localDate, now).changes === 1;
+    },
+    // Admits an alert only while fewer than `max` were admitted for the patient since `since` (one statement, so atomic).
+    claimCaregiverAlert(id, patientNumber, localDate, now, since, max) {
+      return db.prepare(`INSERT INTO caregiver_message SELECT ?, ?, 'alert', ?, 'sending', NULL, ?
+        WHERE (SELECT count(*) FROM caregiver_message WHERE patient_number = ? AND kind = 'alert' AND created_at > ?) < ?`)
+        .run(id, patientNumber, localDate, now, patientNumber, since, max).changes === 1;
+    },
+    finishCaregiverMessage(id, status, outcome) {
+      db.prepare('UPDATE caregiver_message SET status = ?, outcome = ? WHERE id = ?').run(status, outcome, id);
+    },
+    caregiverMessages(patientNumber, localDate) {
+      return db.prepare('SELECT * FROM caregiver_message WHERE patient_number = ? AND local_date = ? ORDER BY created_at')
+        .all(patientNumber, localDate);
     },
     // Returns false for a redelivered event so handlers stay idempotent.
     recordDialEvent(event, retentionDays) {
@@ -79,8 +111,13 @@ export function sqliteVoiceStore(db) {
       return db.prepare('SELECT * FROM reminders WHERE call_id = ?').get(callId);
     },
     unsettledCalls(before, limit = 5) {
-      return db.prepare(`SELECT * FROM reminders WHERE status = 'calling' AND updated_at < ?
+      return db.prepare(`SELECT * FROM reminders WHERE status = 'calling' AND call_id IS NOT NULL AND updated_at < ?
         ORDER BY updated_at LIMIT ?`).all(before, limit);
+    },
+    // Calls whose placement timed out: Dial may or may not have placed them.
+    unconfirmedCalls(limit = 5) {
+      return db.prepare(`SELECT * FROM reminders WHERE status = 'calling' AND call_id IS NULL
+        ORDER BY updated_at LIMIT ?`).all(limit);
     },
   };
 }

@@ -81,4 +81,20 @@ CREATE TABLE IF NOT EXISTS reminders (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS reminders_by_status ON reminders (status, due_at);
+-- Webhook deliveries whose side effects completed (redeliveries of the same event are skipped).
+CREATE TABLE IF NOT EXISTS dial_event_handled (
+  id TEXT PRIMARY KEY,
+  handled_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Caregiver texts: alerts (rate-limited) and one daily summary per patient per local day.
+CREATE TABLE IF NOT EXISTS caregiver_message (
+  id TEXT PRIMARY KEY,
+  patient_number TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('alert', 'summary')),
+  local_date TEXT NOT NULL,
+  status TEXT NOT NULL,
+  outcome TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS caregiver_message_by_patient ON caregiver_message (patient_number, kind, created_at);
 COMMIT;

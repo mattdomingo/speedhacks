@@ -26,8 +26,13 @@ function localTime(iso, timeZone) {
   return new Intl.DateTimeFormat('en-US', { timeZone, dateStyle: 'full', timeStyle: 'short' }).format(new Date(iso));
 }
 
+// JSON with < and > escaped, so text such as "</memories>" inside a memory cannot close the data block.
+function dataLine(memory) {
+  return JSON.stringify(memory).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+}
+
 function context(memories, now, timeZone) {
-  return `<memories>\n${memories.map(memory => JSON.stringify(memory)).join('\n')}\n</memories>\n\n${UNTRUSTED}\nCurrent local time: ${localTime(now, timeZone)}`;
+  return `<memories>\n${memories.map(dataLine).join('\n')}\n</memories>\n\n${UNTRUSTED}\nCurrent local time: ${localTime(now, timeZone)}`;
 }
 
 export function askTurn({ question, now, time_zone, memories }) {

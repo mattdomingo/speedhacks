@@ -39,6 +39,7 @@ export function openPostgresStore(connectionString) {
       const { rows } = await pool.query('SELECT timestamp, jpeg FROM latest_frame WHERE slot = 1');
       return rows[0];
     },
+    async ping() { await pool.query('SELECT 1'); },
     close() { return pool.end(); },
   };
 }

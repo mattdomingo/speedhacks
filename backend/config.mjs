@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isTimeZone } from './time.mjs';
+import { E164, patientsSchema } from './voice/patients.mjs';
 
 const secret = z.string().min(32);
 const optional = schema => z.preprocess(value => value === '' ? undefined : value, schema.optional());
@@ -60,8 +61,31 @@ export function readConfig(env = process.env) {
     // Backend-only provider keys; unset makes the matching Steph endpoint return 503.
     ANTHROPIC_API_KEY: optional(z.string().trim().min(1)),
     STEPH_MODEL: z.string().trim().min(1).default('claude-opus-5-5'),
+    // Steph's model provider: auto picks Claude when ANTHROPIC_API_KEY is set, else Gemini (GEMINI_API_KEY).
+    STEPH_PROVIDER: z.enum(['auto', 'claude', 'gemini']).default('auto'),
+    STEPH_GEMINI_MODEL: z.string().trim().min(1).default('gemini-3.5-flash-lite'),
     VOYAGE_API_KEY: optional(z.string().trim().min(1)),
     EMBED_MODEL: z.string().trim().min(1).default('voyage-3.5-lite'),
+    // JSON array of {number, name?, caregiver?, timeZone?}; DEMO_CALLER_NUMBER is always the primary patient.
+    PATIENTS: optional(z.string().transform((text, ctx) => {
+      try {
+        return patientsSchema.parse(JSON.parse(text));
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'PATIENTS must be a JSON array of {number, name, caregiver, timeZone}' });
+        return z.NEVER;
+      }
+    })),
+    // Caregiver (E.164) for the primary patient: alerts and the daily summary go here.
+    CAREGIVER_NUMBER: optional(z.string().regex(E164)),
+    // Safety net for testing: when set, Dial never calls or texts any other number.
+    DIAL_ALLOWED_NUMBERS: optional(z.string().transform((text, ctx) => {
+      const numbers = text.split(',').map(number => number.trim()).filter(Boolean);
+      if (!numbers.every(number => E164.test(number))) {
+        ctx.addIssue({ code: 'custom', message: 'DIAL_ALLOWED_NUMBERS must be comma-separated E.164 numbers' });
+        return z.NEVER;
+      }
+      return numbers;
+    })),
   }).parse({ ...env, DATABASE_URL: env.DATABASE_URL || undefined });
   if (env.VERCEL === '1' && !config.DATABASE_URL) {
     throw new Error('Set DATABASE_URL on Vercel; local SQLite is not durable there');
