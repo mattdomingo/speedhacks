@@ -2,6 +2,8 @@
 
 Phone memory assistant hackathon scaffold. A person calls a number, asks about a plan or misplaced object, and hears an answer grounded in timestamped evidence.
 
+Production API: **https://recall-kappa-nine.vercel.app**. Check [health](https://recall-kappa-nine.vercel.app/health); connect Dial to `https://recall-kappa-nine.vercel.app/mcp`. This is an API backend; `/` returns 404.
+
 **Infrastructure only:** the runnable MCP tools read labeled synthetic memories. Google accounts, Dial calls, and object detection are not connected. Webcam uploads do not identify objects.
 
 ## Architecture
@@ -26,11 +28,13 @@ The camera makes outbound HTTPS requests, requiring no public laptop port. The b
 
 | Engineer | Owns | Next work |
 | --- | --- | --- |
-| 1: Phone and deployment | `backend/voice/`, `backend/app.mjs`, database adapters, Vercel and Docker configuration | Provision Postgres and Vercel, connect Dial MCP, deploy and test a real call |
+| 1: Phone and deployment | `backend/voice/`, `backend/app.mjs`, database adapters, Vercel and Docker configuration | Maintain hosted infrastructure, connect Dial MCP, and test a real call |
 | 2: Digital memory | `backend/digital/` | Add Google authorization and Calendar/email retrieval with source references |
 | 3: Physical memory | `camera/`, `backend/physical/` | Add vision extraction, placement observations, and last-seen validation |
 
 `contracts/index.mjs` defines shared payload validation and tool inputs. Coordinate changes here before changing producers or consumers. Engineer 1 owns the shared backend deployment.
+
+Store calls may be asynchronous: always `await` reads and writes so both SQLite and Postgres work. Finish required processing and writes before sending an HTTP response. Keep durable state in the database; a process-local cache or a background task after the response is not durable on Vercel. Schema changes belong in `backend/schema.sql` and must be applied to each environment before code depends on them.
 
 ## Local startup
 
@@ -80,8 +84,8 @@ Memory tools return `{"status":"supported","evidence":[...]}` or `{"status":"unk
 
 ## Dial connection: follow-up work
 
-1. Host the backend behind HTTPS, or use a development HTTPS tunnel to its local port.
-2. In Dial Context MCP settings, add `https://YOUR_BACKEND/mcp` with static header `Authorization: Bearer YOUR_DIAL_MCP_TOKEN`.
+1. Verify the production [health endpoint](https://recall-kappa-nine.vercel.app/health), or use a development HTTPS tunnel when testing a local backend.
+2. In Dial Context MCP settings, add `https://recall-kappa-nine.vercel.app/mcp` with static header `Authorization: Bearer YOUR_DIAL_MCP_TOKEN`.
 3. Configure the number's inbound instruction with `backend/voice/instructions.txt`.
 4. Set `DEMO_CALLER_NUMBER`, then call from that number.
 
@@ -101,13 +105,25 @@ python3 -m venv .venv
 PYTHON=.venv/bin/python npm run camera -- --once
 ```
 
-Omit `--once` for repeated capture. Defaults: webcam 0, one frame every 5 seconds. The npm command loads `.env`. Use `BACKEND_URL=https://YOUR_BACKEND` for remote uploads; remote plain HTTP is rejected. Running capture requests OS webcam permission.
+Omit `--once` for repeated capture. Defaults: webcam 0, one frame every 5 seconds. The npm command loads `.env`. Use `BACKEND_URL=https://recall-kappa-nine.vercel.app` and the production `CAMERA_TOKEN` for remote uploads; remote plain HTTP is rejected. Running capture requests OS webcam permission.
 
 Engineer 3 adds inference and posts observations. The current uploader explicitly reports that inference is unconfigured. Test a visible tabletop first, including hidden objects and missed placements.
 
 ## Deployment infrastructure
 
 ### Vercel and managed Postgres
+
+The existing [Vercel project `recall`](https://vercel.com/openfloor-51a7e770/recall) belongs to the **openfloor** team (`openfloor-51a7e770`). Its connected Git repository is `mattdomingo/speedhacks`, with `main` as the production branch. Pushes to `main` deploy production; other branches receive protected previews.
+
+Neon resources `recall-production` and `recall-preview` use the Free plan in `iad1`, alongside the function region. Their initialized databases and API tokens are separate. Each database is connected only to its matching Vercel environment. Production runs with `DEMO_MODE=true`; `DEMO_CALLER_NUMBER` is not configured, so MCP tool discovery works but callers cannot retrieve evidence until a consented test number is configured and deployed.
+
+Engineers should pull `main`, follow local startup above, and link the existing project if they need deployments:
+
+```sh
+npx vercel@latest link --project recall --scope openfloor-51a7e770
+```
+
+Do not create another production project or point previews at the production database. Ask the project owner for the correct environment's API tokens through a secure channel; they are Vercel Secrets, and `vercel env pull` returns `[SENSITIVE]` placeholders for them. Local `npm run setup` tokens work only against your local backend. Vercel Standard Protection keeps preview and generated deployment URLs private while the production domain above remains reachable with the application's bearer authentication. Use `vercel curl /health --deployment <preview-url>` for an authenticated preview health check.
 
 The repository is configured for Vercel Services with a single Express service:
 
@@ -134,13 +150,13 @@ The catch-all preserves existing request paths: `/health`, `/mcp`, `/camera/fram
 
 The native Express runtime handles the backend; Vercel does not use the Dockerfile. The root `server.mjs` entrypoint loads the existing backend startup and lets Vercel's Express builder discover it. Postgres holds both observations and the latest JPEG. Database calls are asynchronous, and the connection pool uses Vercel's lifecycle helper. When `VERCEL=1`, startup fails without `DATABASE_URL` instead of using ephemeral SQLite.
 
-Required setup before deploying:
+To recreate this infrastructure in a different Vercel project:
 
 1. Create or select a Vercel project for this repository, with its root directory set to the repository root and project framework preset set to **Services**. Use a Node 22 runtime as specified in `package.json`.
 2. Connect a managed Postgres database through the [Vercel Marketplace](https://vercel.com/docs/postgres), or use an existing provider. Select a database region near the Vercel function region. Set `DATABASE_URL` to the provider's pooled connection URL with TLS. Keep preview and production databases separate; a preview must not write production memories.
 3. Set the environment variables below in each Vercel environment you intend to deploy. Keep local secrets in ignored `.env` files, never in `vercel.json` or client code.
 4. Initialize each new database once before serving traffic. With its `DATABASE_URL` in your local ignored `.env` or exported shell environment, run `npm run db:init`. This executes `backend/schema.sql` and preserves existing tables and records. It does not copy existing SQLite data, and migrations do not run during Vercel builds or function startup.
-5. Link the repository with `npx vercel@latest link`, verify locally using `npx vercel@latest dev -L`, then deploy a preview with `npx vercel@latest`. After checking it, publish with `npx vercel@latest --prod`. Set the laptop's `BACKEND_URL` to the production HTTPS origin and configure Dial's `/mcp` URL.
+5. Link the repository with `npx vercel@latest link`, verify locally using `npx vercel@latest dev -L`, then deploy a preview with `npx vercel@latest --target preview`. After checking it, publish with `npx vercel@latest --prod`. Vercel otherwise assigns a new project's first deployment to production. Set the laptop's `BACKEND_URL` to the production HTTPS origin and configure Dial's `/mcp` URL.
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
@@ -157,7 +173,7 @@ To use `vercel dev -L`, put local test database credentials and application secr
 
 After deployment, check `/health`, verify unauthenticated camera requests return 401, and test an authenticated upload and retrieval. `/health` is liveness only; it does not prove database connectivity. Run the MCP tests and a real Dial call before claiming the voice integration works. Existing SQLite records stay in `DATA_DIR`; moving those records into Postgres requires a separate import.
 
-These files configure deployment; they do not by themselves provision a Vercel project, database, domain, or Dial number. See [Vercel Services](https://vercel.com/docs/services), [Express hosting](https://vercel.com/docs/frameworks/backend/express), and [database connection pools](https://vercel.com/kb/guide/connection-pooling-with-functions).
+The existing project and databases above were provisioned separately; these files alone do not provision them or a Dial number. See [Vercel Services](https://vercel.com/docs/services), [Express hosting](https://vercel.com/docs/frameworks/backend/express), and [database connection pools](https://vercel.com/kb/guide/connection-pooling-with-functions).
 
 ### Local Docker Compose
 
@@ -184,4 +200,8 @@ TEST_DATABASE_URL=postgres://test:test@127.0.0.1:5432/speedhacks_test npm test
 
 The test database user needs permission to create schemas. Each fixture creates and removes its own schema; the suite does not use `DATABASE_URL` or erase the database's existing tables. Use a direct local/test connection that supports PostgreSQL session options for these tests, not a production pooler.
 
-GitHub Actions is configured to run the backend suite with SQLite and Postgres 17, plus the Python camera suite. This configuration is not proof that a hosted CI run passed. Checks cover MCP discovery and retrieval, caller restrictions, unknown evidence, validation, timestamp ordering, persistence, and camera upload limits. Real calls, Google access, webcam accuracy, and clinical usefulness remain unverified.
+GitHub Actions runs the backend suite with SQLite and Postgres 17, plus the Python camera suite. The [hosting foundation run](https://github.com/mattdomingo/speedhacks/actions/runs/38169291132) passed on October 11, 2026: 11 backend tests per database and 2 Python tests. Checks cover MCP discovery and retrieval, caller restrictions, unknown evidence, validation, timestamp ordering, persistence, and camera upload limits.
+
+Production verification also passed public health, root 404, unauthenticated rejection, authenticated JPEG upload/retrieval, durable Neon writes, MCP discovery, and rejection of callers without an allowlisted number. Synthetic verification data was removed afterward. Real Dial calls, Google access, webcam accuracy, and clinical usefulness remain unverified.
+
+The protected preview was also checked: its authenticated observation write appeared only in the preview database, never production, and was removed afterward.
