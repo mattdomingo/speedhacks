@@ -202,7 +202,7 @@ test('frame integration reaches authenticated MCP with aliases, evidence photogr
   const { store, url } = await fixture(t, { DEMO_MODE: 'false', GEMINI_API_KEY: 'test-only' }, {
     now: () => now,
     analyze: async () => ({ detections: [{ object: 'keys', location: 'beside the mug',
-      bbox: [100, 100, 200, 200], resting: true, uncertain: false }] }),
+      bbox: [100, 100, 200, 200], resting: true, uncertain: false, visibility: 'clear' }] }),
   });
   await seedDemo(store);
   const client = await connect(t, url, { 'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'inbound' });

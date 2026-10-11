@@ -260,7 +260,7 @@ Expected / Actual:
   - Production's MCP can only be re-added with its own token.
 
 Root cause: one Dial account and one Steph number serve both production and testing.
-Fix: deferred (operations). Use a second Dial number or account for testing, or coordinate one owner. `npm run dial:connect` only replaces registrations that point at tunnel hosts, never production's.
+Fix: deferred (operations). The team's DEC-019 assigns Steph's line to production, so the other session's switch back at 21:42 was correct. Testing a branch build needs a second Dial number or account, or a coordinated window. `npm run dial:connect` only replaces registrations that point at tunnel hosts, never production's.
 Status: Open
 
 ## [E-08] Demo-mode count included real memories

@@ -1,4 +1,4 @@
-// Points Dial at this backend's public URL: a signed webhook (call.ended, call.transcribed,
+// Points Dial at this backend's public URL: a signed webhook (call.ended, call.transcribed, message.status_changed,
 // message.received), the Context MCP with its static bearer header, and Steph's inbound
 // instruction. Tunnel URLs change on every restart, so earlier registrations that point at a
 // tunnel host are replaced; anything pointing elsewhere (production) is left alone.
@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 const API = 'https://api.getdial.ai/api/v1';
 const TUNNEL = /\.(trycloudflare\.com|ngrok-free\.app|ngrok\.app|ngrok\.io)$/;
-const EVENTS = ['call.ended', 'call.transcribed', 'message.received'];
+const EVENTS = ['call.ended', 'call.transcribed', 'message.received', 'message.status_changed'];
 
 function fail(message) {
   console.error(message);

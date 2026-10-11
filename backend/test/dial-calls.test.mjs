@@ -173,13 +173,14 @@ test('409 calling_disabled and 400 are surfaced once and never retried', async t
   }
 });
 
-test('a text whose POST times out is checked against the message list and never sent twice', async t => {
-  for (const [mode, outcome] of [['timeout', 'failed'], ['sent-then-timeout', 'texted']]) {
+// Texts follow DEC-020: reserved before the request, so a timeout leaves the delivery unknown, never a resend.
+test('a text whose POST times out is recorded as unknown and never sent twice', async t => {
+  for (const mode of ['timeout', 'sent-then-timeout']) {
     const { api, clock, client, dispatch } = await fixture(t);
     await client.callTool({ name: 'set_reminder', arguments: { text: 'Garden club', in_minutes: 1, channel: 'text' } });
     api.onText = mode;
     clock.now += 60_000;
-    assert.equal((await dispatch())[outcome], 1, mode);
+    assert.equal((await dispatch()).failed, 1, mode);
     clock.now += 10 * 60_000;
     await dispatch();
     assert.equal(api.posts.filter(post => post.path === '/messages').length, 1, mode);

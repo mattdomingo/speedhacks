@@ -4,7 +4,7 @@ One stationary camera, one user, one keys/phone/wallet instance each, on a fixed
 
 ## Start
 
-1. Install dependencies and create local secrets with `npm ci && npm run setup`. In the ignored backend `.env`, set `GEMINI_API_KEY` from a paid Gemini project, `DEMO_MODE=false`, and the existing `DEMO_CALLER_NUMBER` allowlist. Never put the provider key in camera-only configuration or phone code.
+1. Install dependencies and create local secrets with `npm ci && npm run setup`. In the ignored backend `.env`, set `GEMINI_API_KEY` from a paid Gemini project, `VISION_MODEL=gemini-3.5-flash-lite`, `DEMO_MODE=false`, and the existing `DEMO_CALLER_NUMBER` allowlist. Never put the provider key in camera-only configuration or phone code.
 2. For Vercel, use the existing managed Postgres connection and run `npm run db:init` against that environment. The additive schema preserves evidence and raw frames. Local SQLite migrates additively on open. These changes do not import SQLite records into Postgres.
 3. Start the backend with `npm start`, or use its deployed HTTPS origin. The camera needs only `CAMERA_TOKEN` and `BACKEND_URL`; the local npm convenience command loads `.env`.
 4. Install `camera/requirements.txt` in `.venv`, allow macOS camera access, then run `PYTHON=.venv/bin/python npm run camera -- --preview`. Preview also uploads. Aim at the tabletop so small keys are clearly resolved; keep the camera fixed and laptop awake. Press `q` to stop, or use Ctrl-C without preview.
@@ -13,8 +13,9 @@ Each upload can wait for up to 20 seconds of inference plus database/network tim
 
 ## Confirmation and retention
 
-- The provider returns keys/phone/wallet, visible location, bounding box `[ymin,xmin,ymax,xmax]` on a 0–1000 scale, and resting/uncertain flags. Zod validates all responses.
-- Save only a unique, certain, resting category seen in two consecutive successful analyses, with distinct capture times at most 30 seconds apart and box intersection-over-union of at least 0.5. Missing, held, uncertain, or duplicate-category detections break that category's confirmation chain. Failed analysis breaks all chains.
+- The provider returns keys/phone/wallet, visible location, bounding box `[ymin,xmin,ymax,xmax]` on a 0–1000 scale, resting/uncertain flags, and a required `visibility: clear|partially_occluded|unclear`. Zod validates all responses.
+- Save only a unique, certain, resting category assessed as `clear` in two consecutive successful analyses, with distinct capture times at most 30 seconds apart and box intersection-over-union of at least 0.5. Missing, held, uncertain, partially occluded, unclear, or duplicate-category detections break that category's confirmation chain. Failed analysis breaks all chains. An older stored candidate without visibility cannot confirm; recovery needs two fresh clear views.
+- A recognizable object can still be partially occluded. Such detections preserve the last confirmed location, timestamp, and photograph even if the model reports `uncertain:false`. Visibility remains a model judgment, so this gate reduces mistakes without guaranteeing occlusion accuracy.
 - A database lease allows one request at a time across Vercel instances. Starts are at least five seconds apart (at most 12/minute). Failures back off for 5–60 seconds, honoring longer provider Retry-After values. New uploads replace the pending raw frame. A busy/throttled pending frame is attempted on a subsequent fresh upload; no upload means no further work.
 - The latest successful candidate persists across ordinary serverless cold starts. Expired interrupted leases invalidate continuity; a gap over 30 seconds requires a fresh pair. This adapts the original process-restart rule to Vercel, where requests may use different instances.
 - Record and supporting JPEG commit in one transaction. Lease fencing prevents late replies from overwriting newer results. Duplicated or older capture times never supply new evidence. The latest raw frame and one automatic memory/photo per category are retained; earlier manual records remain compatible. Replaced evidence images return 404 unless another category still uses that frame.
@@ -39,7 +40,7 @@ Illustrative supported response (camera metadata abbreviated):
     "timestamp": "2026-10-11T19:42:00.000Z",
     "demo": false,
     "bbox": [600, 100, 700, 250],
-    "model": "gemini-3.8-flash",
+    "model": "gemini-3.5-flash-lite",
     "frameId": "69c47b36818a0ad36ba63539e9ffcf4bd590f8b7409a127d1a60b3889f5f2c44"
   }],
   "camera": { "status": "live", "lastCapturedAt": "2026-10-11T19:42:00.000Z", "lastAnalyzedAt": "2026-10-11T19:42:00.000Z" }
@@ -72,7 +73,7 @@ Say the historical location and time, and explain that the camera has not checke
 
 ### MCP smoke test
 
-No provisioned phone number or Dial account is required. For MCP-only testing, set `DEMO_CALLER_NUMBER=+14155550123` in both the backend environment and the local `.env`; redeploy after changing hosted configuration. This reserved number is only an authorization value in request headers. The existing `DIAL_MCP_TOKEN` is still required, and no phone call is placed.
+No provisioned phone number or Dial account is required. For an isolated MCP-only environment, set `DEMO_CALLER_NUMBER=+14155550123` in both the backend environment and the local `.env`; redeploy after changing hosted configuration. This reserved number is only an authorization value in request headers. Once real calling is configured, use the existing consented caller value for the smoke test instead of replacing production's allowlist. The existing `DIAL_MCP_TOKEN` is still required, and no phone call is placed.
 
 With the backend running, `DEMO_MODE=false`, its matching `DIAL_MCP_TOKEN` and allowlisted `DEMO_CALLER_NUMBER` loaded locally (plus `CALLER_PIN` if the backend sets one):
 
@@ -81,6 +82,16 @@ node --env-file=.env scripts/smoke-object-memory.mjs
 ```
 
 Set `BACKEND_URL` for the hosted server. The script discovers `find_object`, queries all three categories, checks timestamps/freshness metadata, rejects synthetic evidence, and prints results. It performs read-only MCP calls, with no Dial call and no paid inference. Supported and unknown are both valid smoke-test outcomes; this alone does not measure recognition accuracy. The same script is exercised by the automated HTTP/MCP integration test using a stubbed analyzer.
+
+### Test with Steph's phone line
+
+1. Configure the existing Steph line using [Connect Dial](../README.md#connect-dial). Its production Context MCP URL is `https://recall-kappa-nine.vercel.app/mcp`, with the production `DIAL_MCP_TOKEN` as a static Authorization bearer header. Dial supplies caller and direction headers for each call; never set a fixed caller header on the connection. Replace a development connection exposing the same tools: Dial rejects duplicate tool names, even across different MCP URLs.
+2. Set production `DEMO_CALLER_NUMBER` to the consented phone that will call Steph, plus `CALLER_PIN` and the user's IANA `TIMEZONE`, then redeploy. Keep their actual values out of Git. Run the smoke test above with matching local settings. A missing PIN and any unlisted caller must still be rejected.
+3. Start the camera preview using the command under **Start**. Place keys, phone, and wallet clearly on the tabletop, remove your hands, and wait for two successful analyzed frames. Confirm the smoke result has a new evidence timestamp; `camera.status: live` alone does not prove that object was seen again.
+4. From the allowed phone, call Steph at **+1 240-896-2183**. Ask, "Where did I leave my keys?" Give your memory PIN when asked. Expect the saved location and its observation time, in your configured time zone. Repeat for the wallet or phone; asking about an unseen object should return no record.
+5. To test a stale camera, stop capture and wait over sixty seconds, then ask again. Steph should retain the old sighting and its time and explain that it cannot confirm a fresh camera view. Restart capture and obtain two fresh clear views before testing a new placement.
+
+Backend smoke checks and Dial's `connected` status establish readiness, not a completed voice test. Record the actual call separately, including whether the PIN prompt, tool lookup, spoken location, and spoken time were correct. End the call after the test; do not create a reminder unless you intend its later call or text.
 
 ### Camera diagnostics
 

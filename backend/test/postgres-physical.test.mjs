@@ -27,8 +27,9 @@ test('Postgres coordinates separate instances, retains snapshots and fences inte
   stores.push(first, second);
   const base = Date.parse('2026-10-11T12:00:00Z');
   let now = base;
+  let visibility = 'clear';
   const options = { now: () => now, analyze: async () => ({ detections: [
-    { object: 'wallet', location: 'on the left', bbox: [100, 100, 200, 200], resting: true, uncertain: false },
+    { object: 'wallet', location: 'on the left', bbox: [100, 100, 200, 200], resting: true, uncertain: false, visibility },
   ] }) };
   const config = { GEMINI_API_KEY: 'test-only' };
   const memoryA = createPhysicalMemory(config, first, options), memoryB = createPhysicalMemory(config, second, options);
@@ -43,11 +44,30 @@ test('Postgres coordinates separate instances, retains snapshots and fences inte
   now += 5_000;
   await first.saveFrame(new Date(now).toISOString(), Buffer.from('confirmed'));
   assert.equal((await memoryA.processLatest()).confirmed, 1);
-  const evidence = (await second.list('camera'))[0];
+  let evidence = (await second.list('camera'))[0];
   assert.equal(evidence.object, 'wallet');
   assert.equal(Buffer.from((await second.cameraSnapshot(evidence.frameId)).jpeg).toString(), 'confirmed');
   assert.equal(await second.saveFrame(new Date(now).toISOString(), Buffer.from('duplicate')), false);
   assert.equal((await memoryB.processLatest()).inference, 'throttled');
+
+  visibility = 'partially_occluded';
+  for (let i = 0; i < 2; i++) {
+    now += 5_000;
+    await first.saveFrame(new Date(now).toISOString(), Buffer.from('occluded'));
+    assert.equal((await memoryB.processLatest()).confirmed, 0);
+    assert.deepEqual((await second.list('camera'))[0], evidence);
+    assert.equal(Buffer.from((await second.cameraSnapshot(evidence.frameId)).jpeg).toString(), 'confirmed');
+  }
+  visibility = 'clear';
+  for (let i = 0; i < 2; i++) {
+    now += 5_000;
+    await first.saveFrame(new Date(now).toISOString(), Buffer.from('recovered'));
+    assert.equal((await memoryA.processLatest()).confirmed, i);
+    if (i === 0) assert.deepEqual((await second.list('camera'))[0], evidence);
+  }
+  evidence = (await second.list('camera'))[0];
+  assert.equal(evidence.timestamp, new Date(now).toISOString());
+  assert.equal(Buffer.from((await second.cameraSnapshot(evidence.frameId)).jpeg).toString(), 'recovered');
 
   await admin.query(`CREATE FUNCTION reject_snapshot() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN RAISE EXCEPTION 'test snapshot failure'; END $$;
@@ -58,5 +78,5 @@ test('Postgres coordinates separate instances, retains snapshots and fences inte
   await assert.rejects(memoryA.processLatest(), /snapshot failure/);
   assert.deepEqual((await second.list('camera'))[0], evidence);
   assert.equal((await second.readCameraState()).lastAnalyzedAt, evidence.timestamp);
-  assert.equal(Buffer.from((await second.cameraSnapshot(evidence.frameId)).jpeg).toString(), 'confirmed');
+  assert.equal(Buffer.from((await second.cameraSnapshot(evidence.frameId)).jpeg).toString(), 'recovered');
 });

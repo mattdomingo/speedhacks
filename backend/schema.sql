@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS google_connection (
   status TEXT NOT NULL CHECK (status IN ('connected', 'reconnect_required')),
   connected_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Token-endpoint origin a connection was made against (DEC-015); NULL means real Google.
+ALTER TABLE google_connection ADD COLUMN IF NOT EXISTS token_origin TEXT;
 -- Retained across disconnects so late OAuth callbacks and reads cannot reuse an old connection.
 CREATE TABLE IF NOT EXISTS google_generation (
   slot INTEGER PRIMARY KEY CHECK (slot = 1),
@@ -72,14 +74,35 @@ CREATE TABLE IF NOT EXISTS reminders (
   text TEXT NOT NULL,
   channel TEXT NOT NULL CHECK (channel IN ('call', 'text')),
   due_at TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('scheduled', 'sending', 'calling', 'delivered', 'missed', 'canceled', 'failed')),
+  status TEXT NOT NULL CHECK (status IN ('scheduled', 'sending', 'calling', 'texting', 'delivered', 'missed', 'canceled', 'failed')),
   attempts INTEGER NOT NULL DEFAULT 0,
   lease_until TEXT,
   call_id TEXT UNIQUE,
   outcome TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  message_id TEXT UNIQUE,
+  message_status TEXT CHECK (message_status IN ('pending', 'unknown', 'delivered', 'failed'))
 );
+-- Keep old installations compatible before deploying code that tracks provider SMS receipts.
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS message_id TEXT;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS message_status TEXT;
+ALTER TABLE reminders DROP CONSTRAINT IF EXISTS reminders_status_check;
+ALTER TABLE reminders ADD CONSTRAINT reminders_status_check
+  CHECK (status IN ('scheduled', 'sending', 'calling', 'texting', 'delivered', 'missed', 'canceled', 'failed'));
+ALTER TABLE reminders DROP CONSTRAINT IF EXISTS reminders_message_status_check;
+ALTER TABLE reminders ADD CONSTRAINT reminders_message_status_check
+  CHECK (message_status IN ('pending', 'unknown', 'delivered', 'failed'));
+CREATE UNIQUE INDEX IF NOT EXISTS reminders_message_id_key ON reminders (message_id);
+-- A send response was not proof of delivery, and an interrupted send cannot safely be retried.
+UPDATE reminders SET status = 'texting', message_status = 'unknown', lease_until = NULL,
+  outcome = CASE WHEN outcome IS NULL OR outcome = 'texted' THEN 'text delivery unknown' ELSE outcome END
+  WHERE channel = 'text' AND status IN ('sending', 'delivered', 'failed') AND message_status IS NULL;
+UPDATE reminders SET message_status = 'unknown',
+  outcome = CASE WHEN outcome LIKE '%; texted' THEN left(outcome, length(outcome) - 8)
+    ELSE left(outcome, length(outcome) - 13) END
+  WHERE status = 'missed' AND message_status IS NULL
+    AND (outcome LIKE '%; texted' OR outcome LIKE '%; text failed');
 CREATE INDEX IF NOT EXISTS reminders_by_status ON reminders (status, due_at);
 -- Webhook deliveries whose side effects completed (redeliveries of the same event are skipped).
 CREATE TABLE IF NOT EXISTS dial_event_handled (

@@ -15,7 +15,7 @@ export function readConfig(env = process.env) {
     DIAL_MCP_TOKEN: z.string().min(32),
     CAMERA_TOKEN: z.string().min(32),
     GEMINI_API_KEY: z.string().trim().default(''),
-    VISION_MODEL: z.string().trim().min(1).default('gemini-3.8-flash'),
+    VISION_MODEL: z.string().trim().min(1).default('gemini-3.5-flash-lite'),
     DEMO_CALLER_NUMBER: z.string().regex(/^\+[1-9]\d{7,14}$/).or(z.literal('')).default(''),
     DEMO_MODE: z.enum(['true', 'false']).default('false'),
     VERCEL: z.string().optional(),
@@ -108,8 +108,17 @@ export function readConfig(env = process.env) {
   for (const key of ['GOOGLE_API_BASE_URL', 'GOOGLE_OAUTH_BASE_URL']) {
     if (!config[key]) continue;
     if (env.VERCEL === '1') throw new Error(`${key} is for local mock testing and is not allowed on Vercel`);
-    if (!LOCAL_HOSTS.includes(new URL(config[key]).hostname)) {
+    const url = new URL(config[key]);
+    if (!LOCAL_HOSTS.includes(url.hostname)) {
       throw new Error(`${key} must point at localhost, 127.0.0.1 or [::1]`);
+    }
+    // Paths are appended to the base, so a query, fragment or credentials would misroute them.
+    if (url.search || url.hash || url.username || url.password) {
+      throw new Error(`${key} must be a plain origin and path, without query, fragment or credentials`);
+    }
+    // Mock runs keep their own data: a shared hosted database would mix mock and real Google state.
+    if (config.DATABASE_URL && !LOCAL_HOSTS.includes(new URL(config.DATABASE_URL).hostname)) {
+      throw new Error(`${key} needs a local database; unset DATABASE_URL or point it at localhost`);
     }
   }
   if (config.GOOGLE_REDIRECT_URI) {

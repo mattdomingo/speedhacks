@@ -18,7 +18,7 @@ The end-to-end test, stress test and bug-fix pass from 2026-10-11. Bugs are in [
 1. **One Dial account serves both production and testing (E-07).**
    - The Context MCP and the persona are account-wide, so production and test setups overwrite each other.
    - During this run another session switched the line back to production twice. The tester's inbound call at 21:55 UTC reached production's MCP, where the memory tools failed ("I couldn't check that right now").
-   - Before the demo, pick one environment for the line and leave it.
+   - Per the team's DEC-019 the line belongs to production, so testing a branch build needs its own Dial number (or a coordinated window).
 2. **Free-tier Gemini quota (E-05).** About 15 quick asks per minute, then 429s. Steph then answers from the phone, which is correct but less fluent. Use a paid key for the demo.
 3. **Untested on a real iPhone.** Speech, Sign in with Apple, background tasks, notifications and Vision over a real library were exercised only in the simulator. The bundled keys photo also shows no fruit bowl, so replace it before the demo.
 
@@ -147,7 +147,7 @@ Live runs with Gemini `gemini-3.5-flash-lite`:
 - **Times reach the model in the person's zone** (E-02).
 - **Patients and isolation:** `PATIENTS` JSON, or `DEMO_CALLER_NUMBER` as the single patient. Demo patient B is `+15555550199`.
 - **Tester-only phone safety:** `DIAL_ALLOWED_NUMBERS` and `CAREGIVER_NUMBER` are set to the tester's number; the backend refuses any other destination before a request.
-- **Dial writes are never blindly retried** (B-01; DEC-017 in [AGENTS.md](AGENTS.md)).
+- **Dial calls are never blindly retried** (B-01; DEC-021 in [AGENTS.md](AGENTS.md)); texts are reserved once and never resent (main's DEC-020).
 - **Tester number** (ending 0238) is kept out of git, logs and reports, per AGENTS.md.
 - **Live testing ran from a separate git worktree snapshot,** so the two parallel tracks' in-progress edits never broke the running server.
 
@@ -161,4 +161,4 @@ cd ios && xcodebuild -project Recall.xcodeproj -scheme Recall \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' CODE_SIGNING_ALLOWED=NO test
 ```
 
-Latest backend counts: **SQLite 146 pass + 2 Postgres-only skips; Postgres 16: 147/147** (Postgres not yet re-run after the last test was added).
+Latest backend counts, after merging `main` (PRs #12–#16): **SQLite 167 pass + 2 Postgres-only skips; Postgres 16: 169/169**; camera Python tests pass.

@@ -45,7 +45,7 @@ npm run dial:connect -- https://<random>.trycloudflare.com
 ```
 
 `dial:connect` replaces any earlier tunnel registrations, then:
-- registers the webhook for `call.ended`, `call.transcribed` and `message.received`, and saves its signing secret to `.env`;
+- registers the webhook for `call.ended`, `call.transcribed`, `message.received` and `message.status_changed` (text delivery receipts), and saves its signing secret to `.env`;
 - connects the Context MCP at `/mcp` with the `Authorization: Bearer $DIAL_MCP_TOKEN` header;
 - sets Steph's inbound instruction from `backend/voice/instructions.txt`;
 - fires a `webhook.ping`.

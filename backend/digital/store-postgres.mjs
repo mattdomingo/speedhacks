@@ -77,16 +77,16 @@ export function postgresDigitalStore(pool) {
     async googleConnection() {
       return (await snapshot()).connection;
     },
-    saveGoogleConnection({ email, scope, timezone, refreshToken, generation }) {
+    saveGoogleConnection({ email, scope, timezone, refreshToken, generation, tokenOrigin }) {
       return transaction(async client => {
         const { rows: [current] } = await client.query('SELECT generation::text FROM google_generation WHERE slot = 1 FOR UPDATE');
         if (current.generation !== generation) return undefined;
         await client.query('UPDATE google_generation SET generation = generation + 1 WHERE slot = 1');
-        await client.query(`INSERT INTO google_connection (slot, email, scope, timezone, refresh_token, status)
-          VALUES (1, $1, $2, $3, $4, 'connected')
+        await client.query(`INSERT INTO google_connection (slot, email, scope, timezone, refresh_token, status, token_origin)
+          VALUES (1, $1, $2, $3, $4, 'connected', $5)
           ON CONFLICT (slot) DO UPDATE SET email=excluded.email, scope=excluded.scope, timezone=excluded.timezone,
-            refresh_token=excluded.refresh_token, status='connected', connected_at=now()`,
-        [email ?? null, scope, timezone ?? null, refreshToken]);
+            refresh_token=excluded.refresh_token, status='connected', connected_at=now(), token_origin=excluded.token_origin`,
+        [email ?? null, scope, timezone ?? null, refreshToken, tokenOrigin ?? null]);
         await clearGoogleData(client);
         return (await snapshot(client)).connection;
       });

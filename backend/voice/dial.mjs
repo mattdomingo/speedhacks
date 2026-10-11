@@ -80,6 +80,14 @@ export function createDial(apiKey, fetchImpl = fetch, { allowedNumbers, timeoutM
     async account() {
       return request('GET', '/account');
     },
+    async getMessage(id, { to, since }) {
+      // Dial has no get-by-ID or cursor: search its newest 100 matching outbound
+      // messages, then require the exact ID. A missing row is inconclusive.
+      const payload = await request('GET', '/messages', { query: { direction: 'outbound', contact: to, since } });
+      if (!Array.isArray(payload.messages)) throw new Error('Dial message list is unavailable');
+      return payload.messages.find(message => message?.id === id &&
+        (message.direction === undefined || message.direction === 'outbound'));
+    },
   };
 }
 
@@ -89,10 +97,4 @@ export async function findPlacedCall(dial, { to, from, since, marker }) {
   return calls.find(call => call.to === to && (!from || call.from === from) &&
     (!since || Date.parse(call.createdAt) >= Date.parse(since)) &&
     (!marker || !call.instruction || call.instruction.includes(marker))) ?? null;
-}
-
-// After an ambiguous POST /messages: the text with this exact body sent to `to` since `since`.
-export async function findSentText(dial, { to, since, body }) {
-  const messages = await dial.listMessages({ contact: to, since, direction: 'outbound' });
-  return messages.find(message => message.to === to && message.body === body) ?? null;
 }

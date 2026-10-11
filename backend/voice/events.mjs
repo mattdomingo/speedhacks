@@ -76,7 +76,15 @@ export function createDialEvents(config, store, { dial = null, reminders, patien
     });
   }
 
-  const handlers = { 'call.ended': callEnded, 'call.transcribed': callTranscribed, 'message.received': messageReceived };
+  // Delivery receipts settle reminder texts (DEC-020).
+  async function messageStatusChanged(event) {
+    await reminders?.handleEvent(event);
+  }
+
+  const handlers = {
+    'call.ended': callEnded, 'call.transcribed': callTranscribed, 'message.received': messageReceived,
+    'message.status_changed': messageStatusChanged,
+  };
 
   // webhook.ping and event types Steph does not use are acknowledged without side effects.
   return async function handleDialEvent(event) {
