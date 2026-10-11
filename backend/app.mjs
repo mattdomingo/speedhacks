@@ -2,9 +2,14 @@ import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { frameSchema, observationSchema } from '../contracts/index.mjs';
 import { handleMcp } from './voice/mcp.mjs';
+import { describeHeaders, dialWebhook } from './voice/webhooks.mjs';
+import { createGoogle } from './digital/google.mjs';
+import { googleRoutes } from './digital/routes.mjs';
+import { createAnalytics } from './analytics/index.mjs';
 
 function bearer(token) {
   return (req, res, next) => {
+    if (!token) return res.status(503).json({ error: 'Endpoint is not configured' });
     const supplied = Buffer.from(req.get('authorization') || '');
     const expected = Buffer.from(`Bearer ${token}`);
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
@@ -22,21 +27,30 @@ function validateTimestamp(timestamp) {
   }
 }
 
-export function createApp(config, store) {
+export function createApp(config, store, google = createGoogle({ config, store }), analytics = createAnalytics({})) {
   const app = express();
   app.disable('x-powered-by');
-  app.get('/health', (_req, res) => res.json({ ok: true, demo: config.DEMO_MODE === 'true' }));
+  app.get('/health', (_req, res) => {
+    const db = store.ping();
+    res.status(db ? 200 : 503).json({ ok: db, demo: config.DEMO_MODE === 'true' });
+  });
+  // Signed by Dial over the raw body, so it is mounted before the JSON parser.
+  app.post('/webhooks/dial', ...dialWebhook(config, store, analytics));
   app.use('/mcp', bearer(config.DIAL_MCP_TOKEN));
   app.use('/camera', bearer(config.CAMERA_TOKEN));
   app.use(express.json({ limit: '1mb' }));
+  app.use('/google', googleRoutes(google, bearer(config.ADMIN_TOKEN)));
 
   app.all('/mcp', async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();
     // shortcut: caller ID is only a demo allowlist, add verified identity before real personal data.
-    const authorized = config.DEMO_CALLER_NUMBER !== '' &&
-      req.get('x-dial-user-number') === config.DEMO_CALLER_NUMBER &&
-      req.get('x-dial-direction') === 'inbound';
-    await handleMcp(req, res, store, authorized);
+    if (config.DIAL_LOG_HEADERS === 'true') console.log(`MCP headers: ${describeHeaders(req.headers)}`);
+    const number = req.get(config.DIAL_CALLER_HEADER ?? 'x-dial-user-number');
+    const direction = req.get(config.DIAL_DIRECTION_HEADER ?? 'x-dial-direction');
+    const reason = !config.DEMO_CALLER_NUMBER ? 'no_demo_caller' : !number ? 'no_caller_header'
+      : number !== config.DEMO_CALLER_NUMBER ? 'unknown_caller' : direction !== 'inbound' ? 'not_inbound' : undefined;
+    await handleMcp(req, res, { store, google, analytics, timeZone: google.timeZone() },
+      { authorized: !reason, reason, number: reason ? undefined : number });
   });
 
   app.post('/camera/observations', (req, res) => {

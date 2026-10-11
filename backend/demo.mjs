@@ -1,5 +1,7 @@
-export function seedDemo(store, now = new Date()) {
-  const date = now.toISOString().slice(0, 10);
+import { localDate } from './time.mjs';
+
+export function seedDemo(store, now = new Date(), timeZone = 'UTC') {
+  const date = localDate(now, timeZone);
   const timestamp = now.toISOString();
   for (const item of [
     { id: `demo-calendar-${date}`, source: 'calendar', date,
