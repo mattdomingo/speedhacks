@@ -25,7 +25,7 @@ const response = await fetch(new URL(path, backend), {
 });
 const body = await response.json().catch(() => ({}));
 if (command === 'connect' && response.ok) {
-  console.log(`Open this link within 10 minutes and approve Calendar and Gmail read access:\n\n${body.authorizationUrl}\n`);
+  console.log(`Open this link within 10 minutes and approve access on the one consent screen (Calendar, Gmail, Contacts, Tasks, Photos Picker):\n\n${body.authorizationUrl}\n`);
 } else {
   console.log(JSON.stringify(body, null, 2));
 }
