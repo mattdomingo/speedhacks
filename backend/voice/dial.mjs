@@ -1,6 +1,6 @@
 const API = 'https://api.getdial.ai/api/v1';
 
-// Minimal REST client for the three Dial calls reminders need. Keep DIAL_API_KEY server-side.
+// Minimal REST client for reminders. Keep DIAL_API_KEY server-side.
 export function createDial(apiKey, fetchImpl = fetch) {
   async function request(method, path, body, headers = {}) {
     const response = await fetchImpl(`${API}${path}`, {
@@ -11,7 +11,8 @@ export function createDial(apiKey, fetchImpl = fetch) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(`Dial ${method} ${path.split('/')[1]} failed with ${response.status}`);
+      // Query strings can contain recipient numbers; never include them in errors.
+      const error = new Error(`Dial ${method} ${path.split('?')[0].split('/')[1]} failed with ${response.status}`);
       error.status = response.status;
       throw error;
     }
@@ -29,6 +30,15 @@ export function createDial(apiKey, fetchImpl = fetch) {
     },
     async sendText({ to, from, body }) {
       return (await request('POST', '/messages', { to, fromNumber: from, body })).message;
+    },
+    async getMessage(id, { to, since }) {
+      // Dial has no get-by-ID or cursor: search its newest 100 matching outbound
+      // messages, then require the exact ID. A missing row is inconclusive.
+      const query = new URLSearchParams({ direction: 'outbound', contact: to, since });
+      const payload = await request('GET', `/messages?${query}`);
+      if (!Array.isArray(payload.messages)) throw new Error('Dial message list is unavailable');
+      return payload.messages.find(message => message?.id === id &&
+        (message.direction === undefined || message.direction === 'outbound'));
     },
   };
 }

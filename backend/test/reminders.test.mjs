@@ -7,6 +7,7 @@ import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
 import { localInstant } from '../time.mjs';
 import { spokenTime } from '../voice/reminders.mjs';
+import { createDial } from '../voice/dial.mjs';
 import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
 
 const PATIENT = '+14155550123';
@@ -21,7 +22,7 @@ const START = Date.parse('2026-10-11T20:00:00Z');
 
 function fakeDial() {
   const dial = {
-    calls: [], texts: [], callStatus: {}, failCall: null, failText: null,
+    calls: [], texts: [], polls: [], callStatus: {}, messages: {}, failCall: null, failText: null,
     async placeCall(args) {
       dial.calls.push(args);
       if (dial.failCall) throw dial.failCall;
@@ -31,7 +32,17 @@ function fakeDial() {
     async sendText(args) {
       dial.texts.push(args);
       if (dial.failText) throw dial.failText;
-      return { id: `msg-${dial.texts.length}` };
+      const message = { id: `msg-${dial.texts.length}`, direction: 'outbound', deliveryState: 'pending' };
+      dial.messages[message.id] = message;
+      await dial.onSend?.(message);
+      return dial.sendResponse ?? message;
+    },
+    async getMessage(id, args) {
+      dial.polls.push({ id, ...args });
+      if (dial.failPoll) throw dial.failPoll;
+      const message = dial.messages[id];
+      await dial.onPoll?.(message);
+      return dial.omitMessages ? undefined : message;
     },
   };
   return dial;
@@ -76,6 +87,19 @@ function webhook(url, event, { secret = config.DIAL_WEBHOOK_SECRET, t = Math.flo
 const ended = (callId, status, id = `evt-${callId}-${status}`) => ({
   id, object: 'event', type: 'call.ended', data: { callId, status, direction: 'outbound', durationSeconds: 12 },
 });
+const messageEvent = (messageId, deliveryState, id = `evt-${messageId}-${deliveryState}`, extra = {}) => ({
+  id, object: 'event', type: 'message.status_changed',
+  data: { messageId, deliveryState, changed: 'delivery', readState: 'unsupported', ...extra },
+});
+async function reminderRow(store, id) {
+  return store.db ? store.db.prepare('SELECT * FROM reminders WHERE id = ?').get(id)
+    : (await store.sql('SELECT * FROM reminders WHERE id = $1', [id])).rows[0];
+}
+async function setText(client, text = 'Synthetic reminder') {
+  const reply = await client.callTool({ name: 'set_reminder', arguments: { text, in_minutes: 1, channel: 'text' } });
+  assert.equal(reply.isError, undefined);
+  return reply.structuredContent.reminder.id;
+}
 
 test('local reminder times convert through daylight saving and reject impossible dates', () => {
   const zone = 'America/Los_Angeles';
@@ -174,9 +198,9 @@ test('dispatch is cron-authenticated and calls once per due reminder', async t =
   assert.equal((await fetch(`${url}/cron/dial-reminders`, { headers: { Authorization: `Bearer ${config.DIAL_MCP_TOKEN}` } })).status, 401);
   const client = await connect(t, url, onCall());
   await client.callTool({ name: 'set_reminder', arguments: { text: 'Take the <b>blue</b> pill', in_minutes: 5 } });
-  assert.deepEqual(await (await dispatch(url)).json(), { called: 0, texted: 0, failed: 0, settled: 0 });
+  assert.deepEqual(await (await dispatch(url)).json(), { called: 0, submitted: 0, failed: 0, settled: 0 });
   clock.now += 5 * 60_000;
-  assert.deepEqual(await (await dispatch(url)).json(), { called: 1, texted: 0, failed: 0, settled: 0 });
+  assert.deepEqual(await (await dispatch(url)).json(), { called: 1, submitted: 0, failed: 0, settled: 0 });
   assert.equal((await (await dispatch(url)).json()).called, 0);
   assert.equal(dial.calls.length, 1);
   const [call] = dial.calls;
@@ -208,7 +232,11 @@ test('signed call outcomes settle reminders once and text after a missed call', 
   assert.equal(dial.texts[0].from, STEPH);
   const missed = await store.reminderByCall('call-1');
   assert.equal(missed.status, 'missed');
-  assert.equal(missed.outcome, 'no-answer; texted');
+  assert.equal(missed.outcome, 'no-answer');
+  assert.equal(missed.message_status, 'pending');
+  await webhook(url, messageEvent('msg-1', 'delivered'));
+  assert.equal((await store.reminderByCall('call-1')).status, 'missed');
+  assert.equal((await store.reminderByCall('call-1')).message_status, 'delivered');
   await webhook(url, ended('call-2', 'completed'));
   assert.equal((await store.reminderByCall('call-2')).status, 'delivered');
   assert.equal(dial.texts.length, 1);
@@ -221,7 +249,9 @@ test('text reminders send once and are never retried after a failure', async t =
   await client.callTool({ name: 'set_reminder', arguments: { text: 'Garden club at 4', in_minutes: 1, channel: 'text' } });
   await client.callTool({ name: 'set_reminder', arguments: { text: 'Bring umbrella', in_minutes: 2, channel: 'text' } });
   clock.now += 60_000;
-  assert.equal((await (await dispatch(url)).json()).texted, 1);
+  assert.equal((await (await dispatch(url)).json()).submitted, 1);
+  assert.equal((await store.reminderByMessage('msg-1')).status, 'texting');
+  assert.equal((await store.reminderByMessage('msg-1')).message_status, 'pending');
   assert.equal(dial.texts[0].body, 'Steph (AI assistant) reminder: Garden club at 4');
   dial.failText = Object.assign(new Error('Dial POST messages failed with 500'), { status: 500 });
   clock.now += 60_000;
@@ -273,6 +303,221 @@ test('a lost webhook is reconciled from Dial\'s call status before any fallback'
   assert.equal(dial.texts.length, 0);
   dial.callStatus['call-1'] = { state: 'Terminated', terminationType: 'busy' };
   assert.equal((await (await dispatch(url)).json()).settled, 1);
-  assert.equal((await store.reminderByCall('call-1')).outcome, 'busy; texted');
+  assert.equal((await store.reminderByCall('call-1')).outcome, 'busy');
+  assert.equal((await store.reminderByCall('call-1')).message_status, 'pending');
   assert.equal(dial.texts.length, 1);
+});
+
+test('only signed delivery receipts settle accepted texts, and terminal states cannot regress', async t => {
+  const { url, dial, clock, store } = await fixture(t);
+  const client = await connect(t, url, onCall());
+  const first = await setText(client);
+  const second = await setText(client);
+  clock.now += 60_000;
+  await dispatch(url);
+  const firstRow = await reminderRow(store, first);
+  const secondRow = await reminderRow(store, second);
+  assert.equal(firstRow.status, 'texting');
+  assert.equal(firstRow.message_status, 'pending');
+  const failed = messageEvent(firstRow.message_id, 'failed');
+  assert.equal((await webhook(url, failed, { secret: 'wrong' })).status, 401);
+  assert.equal((await reminderRow(store, first)).message_status, 'pending');
+  await webhook(url, messageEvent(firstRow.message_id, 'delivered', 'evt-inbound', { direction: 'inbound' }));
+  assert.equal((await reminderRow(store, first)).message_status, 'pending');
+  await webhook(url, failed);
+  await webhook(url, messageEvent(secondRow.message_id, 'delivered'));
+  await webhook(url, messageEvent(firstRow.message_id, 'pending'));
+  await webhook(url, messageEvent(secondRow.message_id, 'pending'));
+  await webhook(url, failed);
+  assert.equal((await reminderRow(store, first)).status, 'failed');
+  assert.equal((await reminderRow(store, first)).message_status, 'failed');
+  assert.equal((await reminderRow(store, second)).status, 'delivered');
+  assert.equal((await reminderRow(store, second)).message_status, 'delivered');
+  clock.now += 20 * 60_000;
+  await dispatch(url);
+  assert.equal(dial.texts.length, 2);
+});
+
+test('an early signed receipt is replayed by exact message ID after the send response', async t => {
+  const { url, dial, clock, store } = await fixture(t);
+  const client = await connect(t, url, onCall());
+  const id = await setText(client);
+  dial.onSend = async message => {
+    assert.equal(await store.reminderByMessage(message.id), undefined);
+    await webhook(url, messageEvent(message.id, 'failed'));
+    // The receipt must survive unrelated traffic beyond dialEvents()'s default limit.
+    for (let i = 0; i < 25; i++) await webhook(url, { id: `evt-extra-${i}`, type: 'webhook.ping' });
+  };
+  clock.now += 60_000;
+  await dispatch(url);
+  const row = await reminderRow(store, id);
+  assert.equal(row.message_id, 'msg-1');
+  assert.equal(row.status, 'failed');
+  assert.equal(row.message_status, 'failed');
+  assert.equal(dial.texts.length, 1);
+});
+
+test('polling recovers lost receipts without a webhook secret and cannot overwrite a concurrent receipt', async t => {
+  const { url, dial, clock, store } = await fixture(t, { DIAL_WEBHOOK_SECRET: undefined });
+  const client = await connect(t, url, onCall());
+  const id = await setText(client);
+  clock.now += 60_000;
+  await dispatch(url);
+  dial.messages['msg-1'] = { id: 'msg-1', direction: 'outbound', deliveryState: 'delivered' };
+  clock.now += 2 * 60_000;
+  assert.equal((await (await dispatch(url)).json()).settled, 1);
+  assert.equal((await reminderRow(store, id)).status, 'delivered');
+  assert.equal(dial.polls[0].since, new Date(START).toISOString());
+  assert.equal(dial.texts.length, 1);
+
+  const concurrent = await fixture(t);
+  const other = await connect(t, concurrent.url, onCall());
+  const otherId = await setText(other);
+  concurrent.clock.now += 60_000;
+  await dispatch(concurrent.url);
+  concurrent.dial.onPoll = async message => {
+    await webhook(concurrent.url, messageEvent(message.id, 'delivered'));
+  };
+  concurrent.clock.now += 2 * 60_000;
+  await dispatch(concurrent.url); // The delayed poll still returns its earlier pending snapshot.
+  assert.equal((await reminderRow(concurrent.store, otherId)).message_status, 'delivered');
+  assert.equal((await reminderRow(concurrent.store, otherId)).status, 'delivered');
+});
+
+test('ambiguous send errors, missing IDs and persistence failures never cause a duplicate text', async t => {
+  for (const failure of ['timeout', 'server', 'missing-id', 'persist']) {
+    const { url, dial, clock, store } = await fixture(t);
+    const client = await connect(t, url, onCall());
+    const id = await setText(client);
+    if (failure === 'timeout') dial.failText = new Error('Synthetic timeout');
+    if (failure === 'server') dial.failText = Object.assign(new Error('Synthetic server error'), { status: 503 });
+    if (failure === 'missing-id') dial.sendResponse = { deliveryState: 'pending' };
+    if (failure === 'persist') {
+      const update = store.updateReminderMessage.bind(store);
+      let first = true;
+      store.updateReminderMessage = (...args) => {
+        if (first) { first = false; throw new Error('Synthetic database interruption'); }
+        return update(...args);
+      };
+    }
+    clock.now += 60_000;
+    await dispatch(url);
+    const row = await reminderRow(store, id);
+    assert.equal(row.status, 'texting', failure);
+    assert.equal(row.message_status, 'unknown', failure);
+    assert.equal(row.message_id, null, failure);
+    clock.now += 30 * 60_000;
+    await Promise.all([dispatch(url), dispatch(url), dispatch(url)]);
+    assert.equal(dial.texts.length, 1, failure);
+  }
+});
+
+test('a crash after claiming a text and before sending does not turn its lease into a resend', async t => {
+  const { url, dial, clock, store } = await fixture(t);
+  const client = await connect(t, url, onCall());
+  const id = await setText(client);
+  clock.now += 60_000;
+  const claimed = await store.claimDueReminders(new Date(clock.now).toISOString(), new Date(clock.now + 120_000).toISOString());
+  assert.equal(claimed.length, 1);
+  assert.equal(claimed[0].status, 'texting');
+  clock.now += 30 * 60_000;
+  await dispatch(url);
+  assert.equal(dial.texts.length, 0);
+  assert.equal((await reminderRow(store, id)).message_status, 'unknown');
+});
+
+test('definitive text rejection fails once; ambiguous fallback failure retains the missed call', async t => {
+  const { url, dial, clock, store } = await fixture(t);
+  const client = await connect(t, url, onCall());
+  const id = await setText(client);
+  dial.failText = Object.assign(new Error('Synthetic rejection'), { status: 403 });
+  clock.now += 60_000;
+  await dispatch(url);
+  assert.equal((await reminderRow(store, id)).status, 'failed');
+  assert.equal((await reminderRow(store, id)).message_status, 'failed');
+  await client.callTool({ name: 'set_reminder', arguments: { text: 'Synthetic call reminder', in_minutes: 1 } });
+  clock.now += 60_000;
+  await dispatch(url);
+  dial.failText = Object.assign(new Error('Synthetic uncertain send'), { status: 503 });
+  await Promise.all(Array.from({ length: 8 }, (_, i) => webhook(url, ended('call-1', 'no-answer', `evt-concurrent-${i}`))));
+  const missed = await store.reminderByCall('call-1');
+  assert.equal(missed.status, 'missed');
+  assert.equal(missed.outcome, 'no-answer');
+  assert.equal(missed.message_status, 'unknown');
+  clock.now += 30 * 60_000;
+  await dispatch(url);
+  assert.equal(dial.texts.length, 2);
+});
+
+test('send response states distinguish queued, failed and unknown instead of assuming delivery', async t => {
+  for (const [response, expected] of [
+    [{ deliveryState: 'failed' }, 'failed'],
+    [{ status: 'undelivered' }, 'failed'],
+    [{ status: 'sent' }, 'pending'],
+    [{ deliveryState: 'unconfirmed' }, 'unknown'],
+    [{}, 'unknown'],
+    [{ direction: 'inbound', deliveryState: 'delivered' }, 'unknown'],
+  ]) {
+    const { url, dial, clock, store } = await fixture(t);
+    const client = await connect(t, url, onCall());
+    const id = await setText(client);
+    dial.sendResponse = { id: 'msg-1', ...response };
+    clock.now += 60_000;
+    await dispatch(url);
+    const row = await reminderRow(store, id);
+    assert.equal(row.message_status, expected, JSON.stringify(response));
+    assert.notEqual(row.status, 'delivered');
+    clock.now += 10 * 60_000;
+    await dispatch(url);
+    assert.equal(dial.texts.length, 1);
+  }
+});
+
+test('missing or errored status polls retain state, rotate the bounded queue and never resend', async t => {
+  const { url, dial, clock, store } = await fixture(t);
+  const client = await connect(t, url, onCall());
+  const ids = [];
+  for (let i = 0; i < 7; i++) ids.push(await setText(client));
+  clock.now += 60_000;
+  await dispatch(url);
+  await dispatch(url);
+  dial.omitMessages = true;
+  clock.now += 2 * 60_000;
+  await dispatch(url);
+  const firstPolls = [...dial.polls];
+  dial.failPoll = new Error('Synthetic provider unavailable');
+  clock.now += 2 * 60_000;
+  await dispatch(url);
+  assert.equal(new Set(dial.polls.map(poll => poll.id)).size, 7);
+  assert.ok(firstPolls.every(poll => poll.since === new Date(START).toISOString()));
+  for (const id of ids) {
+    assert.equal((await reminderRow(store, id)).status, 'texting');
+    assert.equal((await reminderRow(store, id)).message_status, 'pending');
+  }
+  assert.equal(dial.texts.length, 7);
+});
+
+test('Dial polling filters outbound history and matches the exact ID without exposing recipients in errors', async () => {
+  const requests = [];
+  const dial = createDial('synthetic', async (url, options) => {
+    requests.push({ url: new URL(url), options });
+    return Response.json({ messages: [
+      { id: 'other-id', direction: 'outbound', deliveryState: 'delivered' },
+      { id: 'wanted', direction: 'inbound', deliveryState: 'delivered' },
+      { id: 'wanted', direction: 'outbound', deliveryState: 'pending' },
+    ] });
+  });
+  const options = { to: PATIENT, since: new Date(START).toISOString() };
+  assert.equal((await dial.getMessage('wanted', options)).deliveryState, 'pending');
+  assert.equal(await dial.getMessage('absent', options), undefined);
+  assert.equal(requests[0].url.pathname, '/api/v1/messages');
+  assert.equal(requests[0].url.searchParams.get('contact'), PATIENT);
+  assert.equal(requests[0].url.searchParams.get('direction'), 'outbound');
+  assert.equal(requests[0].url.searchParams.get('since'), options.since);
+  const rejected = createDial('synthetic', async () => Response.json({}, { status: 401 }));
+  await assert.rejects(rejected.getMessage('wanted', options), error => {
+    assert.equal(error.status, 401);
+    assert.doesNotMatch(error.message, /14155550123|contact|since/);
+    return true;
+  });
 });

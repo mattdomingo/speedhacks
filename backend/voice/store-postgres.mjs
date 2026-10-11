@@ -53,10 +53,11 @@ export function postgresVoiceStore(pool) {
     },
     // SKIP LOCKED lets overlapping cron runs claim disjoint reminders.
     async claimDueReminders(now, leaseUntil, limit = 5) {
-      const { rows } = await pool.query(`UPDATE reminders SET status = 'sending', attempts = attempts + 1,
-        lease_until = $2, updated_at = $1
+      const { rows } = await pool.query(`UPDATE reminders SET status = CASE channel WHEN 'text' THEN 'texting' ELSE 'sending' END,
+        message_status = CASE channel WHEN 'text' THEN 'unknown' ELSE message_status END, attempts = attempts + 1,
+        lease_until = CASE channel WHEN 'call' THEN $2 ELSE NULL END, updated_at = $1
         WHERE id IN (SELECT id FROM reminders
-          WHERE (status = 'scheduled' AND due_at <= $1) OR (status = 'sending' AND lease_until < $1)
+          WHERE (status = 'scheduled' AND due_at <= $1) OR (channel = 'call' AND status = 'sending' AND lease_until < $1)
           ORDER BY due_at LIMIT $3 FOR UPDATE SKIP LOCKED)
         RETURNING *`, [now, leaseUntil, limit]);
       return rows;
@@ -66,6 +67,41 @@ export function postgresVoiceStore(pool) {
         outcome = COALESCE($3, outcome), lease_until = NULL, updated_at = $4 WHERE id = $5 AND status = $6`,
       [status, call_id, outcome, now, id, fromStatus]);
       return result.rowCount > 0;
+    },
+    async claimReminderFallback(id, callStatus, now) {
+      const { rowCount } = await pool.query(`UPDATE reminders SET status = 'missed', outcome = $2,
+        message_status = 'unknown', lease_until = NULL, updated_at = $3 WHERE id = $1 AND status = 'calling'`,
+      [id, callStatus, now]);
+      return rowCount > 0;
+    },
+    async updateReminderMessage(id, { message_id = null, message_status }, now) {
+      if (!['unknown', 'pending', 'delivered', 'failed'].includes(message_status)) return false;
+      const { rowCount } = await pool.query(`UPDATE reminders SET message_id = COALESCE(message_id, $2), message_status = $3,
+        status = CASE WHEN status = 'texting' AND $3 IN ('delivered', 'failed') THEN $3 ELSE status END,
+        outcome = CASE WHEN status = 'texting' THEN 'text delivery ' || $3 ELSE outcome END, updated_at = $4
+        WHERE id = $1 AND status IN ('texting', 'missed') AND message_status IN ('unknown', 'pending')
+          AND (message_id IS NULL OR $2::text IS NULL OR message_id = $2)
+          AND (message_status = 'unknown' OR $3 <> 'unknown')`, [id, message_id, message_status, now]);
+      return rowCount > 0;
+    },
+    async reminderByMessage(messageId) {
+      const { rows } = await pool.query('SELECT * FROM reminders WHERE message_id = $1', [messageId]);
+      return rows[0];
+    },
+    async messageReceipt(messageId) {
+      const { rows } = await pool.query(`SELECT payload FROM dial_event WHERE type = 'message.status_changed'
+        AND payload#>>'{data,messageId}' = $1
+        AND COALESCE(payload#>>'{data,direction}', 'outbound') = 'outbound'
+        ORDER BY CASE WHEN COALESCE(payload#>>'{data,deliveryState}', payload#>>'{data,status}')
+          IN ('delivered', 'failed', 'undelivered')
+          THEN 0 ELSE 1 END, received_at DESC, id DESC LIMIT 1`, [messageId]);
+      return rows[0]?.payload;
+    },
+    async unsettledMessages(before, limit = 5) {
+      const { rows } = await pool.query(`SELECT * FROM reminders WHERE message_id IS NOT NULL
+        AND message_status IN ('pending', 'unknown') AND status IN ('texting', 'missed') AND updated_at < $1
+        ORDER BY updated_at, id LIMIT $2`, [before, limit]);
+      return rows;
     },
     async reminderByCall(callId) {
       const { rows } = await pool.query('SELECT * FROM reminders WHERE call_id = $1', [callId]);

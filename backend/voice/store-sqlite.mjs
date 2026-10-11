@@ -1,5 +1,13 @@
 // Dial webhook events, caller-PIN lockouts and phone reminders for local SQLite. Mirrors store-postgres.mjs.
 export function sqliteVoiceStore(db) {
+  const reminderTable = `CREATE TABLE IF NOT EXISTS reminders (
+    id TEXT PRIMARY KEY, patient_number TEXT NOT NULL, text TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('call', 'text')), due_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('scheduled', 'sending', 'calling', 'texting', 'delivered', 'missed', 'canceled', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0, lease_until TEXT, call_id TEXT UNIQUE, outcome TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, message_id TEXT UNIQUE,
+    message_status TEXT CHECK (message_status IN ('pending', 'unknown', 'delivered', 'failed'))
+  )`;
   db.exec(`
     CREATE TABLE IF NOT EXISTS dial_event (
       id TEXT PRIMARY KEY, type TEXT NOT NULL, created_at TEXT, received_at TEXT NOT NULL, payload TEXT NOT NULL
@@ -8,15 +16,39 @@ export function sqliteVoiceStore(db) {
     CREATE TABLE IF NOT EXISTS caller_pin_failure (
       caller_hash TEXT PRIMARY KEY, failures INTEGER NOT NULL, window_start INTEGER NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS reminders (
-      id TEXT PRIMARY KEY, patient_number TEXT NOT NULL, text TEXT NOT NULL,
-      channel TEXT NOT NULL CHECK (channel IN ('call', 'text')), due_at TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('scheduled', 'sending', 'calling', 'delivered', 'missed', 'canceled', 'failed')),
-      attempts INTEGER NOT NULL DEFAULT 0, lease_until TEXT, call_id TEXT UNIQUE, outcome TEXT,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS reminders_by_status ON reminders (status, due_at);
+    ${reminderTable};
   `);
+  // SQLite cannot alter a CHECK constraint. Rebuild the legacy table atomically, preserving
+  // every supported column, before enabling the new state. No ambiguous SMS is sent again.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const columns = new Set(db.prepare('PRAGMA table_info(reminders)').all().map(column => column.name));
+    const definition = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'reminders'").get().sql;
+    if (!columns.has('message_id') || !columns.has('message_status') || !definition.includes("'texting'")) {
+      db.exec(reminderTable.replace('IF NOT EXISTS reminders', 'reminders_sms_migration'));
+      const previous = 'id, patient_number, text, channel, due_at, status, attempts, lease_until, call_id, outcome, created_at, updated_at';
+      db.exec(`INSERT INTO reminders_sms_migration (${previous}, message_id, message_status)
+        SELECT ${previous}, ${columns.has('message_id') ? 'message_id' : 'NULL'},
+          ${columns.has('message_status') ? 'message_status' : 'NULL'} FROM reminders;
+        DROP TABLE reminders;
+        ALTER TABLE reminders_sms_migration RENAME TO reminders;`);
+    }
+    db.exec(`
+      UPDATE reminders SET status = 'texting', message_status = 'unknown', lease_until = NULL,
+        outcome = CASE WHEN outcome IS NULL OR outcome = 'texted' THEN 'text delivery unknown' ELSE outcome END
+        WHERE channel = 'text' AND status IN ('sending', 'delivered', 'failed') AND message_status IS NULL;
+      UPDATE reminders SET message_status = 'unknown',
+        outcome = CASE WHEN outcome LIKE '%; texted' THEN substr(outcome, 1, length(outcome) - 8)
+          ELSE substr(outcome, 1, length(outcome) - 13) END
+        WHERE status = 'missed' AND message_status IS NULL
+          AND (outcome LIKE '%; texted' OR outcome LIKE '%; text failed');
+      CREATE INDEX IF NOT EXISTS reminders_by_status ON reminders (status, due_at);
+      COMMIT;
+    `);
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
   const cutoff = days => new Date(Date.now() - days * 86_400_000).toISOString();
   return {
     pruneDialEvents(retentionDays) {
@@ -64,9 +96,11 @@ export function sqliteVoiceStore(db) {
         WHERE id = ? AND patient_number = ? AND status = 'scheduled'`).run(now, id, patientNumber).changes > 0;
     },
     claimDueReminders(now, leaseUntil, limit = 5) {
-      return db.prepare(`UPDATE reminders SET status = 'sending', attempts = attempts + 1, lease_until = ?, updated_at = ?
+      return db.prepare(`UPDATE reminders SET status = CASE channel WHEN 'text' THEN 'texting' ELSE 'sending' END,
+        message_status = CASE channel WHEN 'text' THEN 'unknown' ELSE message_status END,
+        attempts = attempts + 1, lease_until = CASE channel WHEN 'call' THEN ? ELSE NULL END, updated_at = ?
         WHERE id IN (SELECT id FROM reminders
-          WHERE (status = 'scheduled' AND due_at <= ?) OR (status = 'sending' AND lease_until < ?)
+          WHERE (status = 'scheduled' AND due_at <= ?) OR (channel = 'call' AND status = 'sending' AND lease_until < ?)
           ORDER BY due_at LIMIT ?) RETURNING *`)
         .all(leaseUntil, now, now, now, limit);
     },
@@ -74,6 +108,39 @@ export function sqliteVoiceStore(db) {
       return db.prepare(`UPDATE reminders SET status = ?, call_id = COALESCE(?, call_id),
         outcome = COALESCE(?, outcome), lease_until = NULL, updated_at = ? WHERE id = ? AND status = ?`)
         .run(status, call_id, outcome, now, id, fromStatus).changes > 0;
+    },
+    claimReminderFallback(id, callStatus, now) {
+      return db.prepare(`UPDATE reminders SET status = 'missed', outcome = ?, message_status = 'unknown',
+        lease_until = NULL, updated_at = ? WHERE id = ? AND status = 'calling'`)
+        .run(callStatus, now, id).changes > 0;
+    },
+    updateReminderMessage(id, { message_id = null, message_status }, now) {
+      if (!['unknown', 'pending', 'delivered', 'failed'].includes(message_status)) return false;
+      return db.prepare(`UPDATE reminders SET message_id = COALESCE(message_id, ?), message_status = ?,
+        status = CASE WHEN status = 'texting' AND ? IN ('delivered', 'failed') THEN ? ELSE status END,
+        outcome = CASE WHEN status = 'texting' THEN ? ELSE outcome END, updated_at = ?
+        WHERE id = ? AND status IN ('texting', 'missed') AND message_status IN ('unknown', 'pending')
+          AND (message_id IS NULL OR ? IS NULL OR message_id = ?)
+          AND (message_status = 'unknown' OR ? <> 'unknown')`)
+        .run(message_id, message_status, message_status, message_status, `text delivery ${message_status}`, now,
+          id, message_id, message_id, message_status).changes > 0;
+    },
+    reminderByMessage(messageId) {
+      return db.prepare('SELECT * FROM reminders WHERE message_id = ?').get(messageId);
+    },
+    messageReceipt(messageId) {
+      const row = db.prepare(`SELECT payload FROM dial_event WHERE type = 'message.status_changed'
+        AND json_extract(payload, '$.data.messageId') = ?
+        AND COALESCE(json_extract(payload, '$.data.direction'), 'outbound') = 'outbound'
+        ORDER BY CASE WHEN COALESCE(json_extract(payload, '$.data.deliveryState'), json_extract(payload, '$.data.status'))
+          IN ('delivered', 'failed', 'undelivered')
+          THEN 0 ELSE 1 END, received_at DESC, id DESC LIMIT 1`).get(messageId);
+      return row && JSON.parse(row.payload);
+    },
+    unsettledMessages(before, limit = 5) {
+      return db.prepare(`SELECT * FROM reminders WHERE message_id IS NOT NULL
+        AND message_status IN ('pending', 'unknown') AND status IN ('texting', 'missed') AND updated_at < ?
+        ORDER BY updated_at, id LIMIT ?`).all(before, limit);
     },
     reminderByCall(callId) {
       return db.prepare('SELECT * FROM reminders WHERE call_id = ?').get(callId);
