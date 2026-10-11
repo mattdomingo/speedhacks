@@ -15,12 +15,12 @@ export async function handleMcp(req, res, store, callerAuthorized) {
   ];
   for (const [name, description, inputSchema, lookup] of tools) {
     server.registerTool(name, { description, inputSchema,
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } }, args => {
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } }, async args => {
       if (!callerAuthorized) return {
         isError: true,
         content: [{ type: 'text', text: 'Caller not authorized. No personal records were retrieved.' }],
       };
-      const result = lookup(args);
+      const result = await lookup(args);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
     });
   }
