@@ -60,7 +60,7 @@ npm start
 
 Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch mode: `npm run dev`.
 
-`DEMO_MODE=true` seeds synthetic calendar, email, and keys memories dated today in the user's zone (`TIMEZONE`, else the Google calendar's, else UTC). Seeded records have `demo: true`. Setting the flag to false stops seeding and excludes synthetic camera records from lookup, including fixtures already in the database. It does not erase records. Live object evidence always takes priority over fixtures. This scaffold has one demo user and no connected Google account.
+`DEMO_MODE=true` seeds synthetic calendar, email, and keys memories dated today in the user's zone (`TIMEZONE`, else the Google calendar's, else UTC). Seeded records have `demo: true`. Setting the flag to false stops seeding and excludes synthetic calendar, email, and camera records from lookup, including fixtures already in the database. It does not erase records. Live object evidence always takes priority over fixtures. Google reads require connecting the intended account separately.
 
 ## Contracts
 
