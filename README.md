@@ -71,9 +71,8 @@ Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch 
 | `get_schedule({date})` | Authorized inbound demo caller | Calendar plans for an explicit `YYYY-MM-DD` date |
 | `search_messages({query})` | Authorized inbound demo caller | Search synced Gmail (and fixtures) by keywords |
 | `find_object({object})` | Authorized inbound demo caller | Latest matching observation by capture time |
-| `whats_today()` | Demo caller on Steph's line, inbound or outbound | Local date and time; listed only when `DIAL_API_KEY` is set, like the reminder tools |
-| `set_reminder({text, in_minutes \| at, channel?})` | Demo caller on Steph's line, inbound or outbound | Schedule a reminder call (default) or text; `at` is local `YYYY-MM-DDTHH:MM` |
-| `list_reminders()` / `cancel_reminder({id})` | Demo caller on Steph's line, inbound or outbound | The caller's upcoming reminders, soonest first |
+| Steph's phone tools (`search_memories`, `recent_conversation`, `whats_today`, `set_reminder`, `list_reminders`, `cancel_reminder`, `add_calendar_event`, `send_text`, `log_medication`, `set_medication`, `update_settings`) | Verified caller on Steph's line ([details](#steph-everywhere)) | The same registry StephBrain uses (`backend/brain/tools.mjs`); listed only when `DIAL_API_KEY` is set |
+| `/v1/*` | Session token (sign-in routes excepted) | The app API: sign-in, setup, messages, Call me / Text me, orb status, timeline, diagnostics, memory sync, push ([contract](docs/steph-api.md)) |
 | `POST /camera/frame` | `Bearer CAMERA_TOKEN` | Store latest JPEG, at most 500 KB; return frame ID and actual inference status |
 | `GET /camera/frame` | `Bearer CAMERA_TOKEN` | Retrieve latest JPEG with `X-Captured-At` |
 | `GET /camera/status` | `Bearer CAMERA_TOKEN` | Capture/analysis freshness, processing errors, latency, token usage |
@@ -85,8 +84,8 @@ Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch 
 | `POST /google/sync` | `Bearer ADMIN_TOKEN` | Sync Calendar and Gmail now |
 | `DELETE /google/connection` | `Bearer ADMIN_TOKEN` | Revoke at Google and delete synced Google evidence |
 | `GET /cron/google-sync` | `Bearer CRON_SECRET` | Vercel Cron: sync Google and prune expired Dial events |
-| `GET /cron/dial-reminders` | `Bearer CRON_SECRET` | Vercel Cron, every minute: deliver due reminders, settle calls whose webhook never arrived |
-| `POST /webhooks/dial` | `X-Dial-Signature` HMAC | Store Dial call/message events (deduplicated, pruned after retention); `call.ended` settles reminder calls |
+| `GET /cron/steph` | `Bearer CRON_SECRET` | Vercel Cron, every minute: Steph's proactive engine (nudges, escalation, settling calls whose webhook never arrived) |
+| `POST /webhooks/dial` | `X-Dial-Signature` HMAC | Store Dial events (deduplicated, pruned after retention); `message.received` is answered by StephBrain, `call.transcribed` joins the timeline and memories, `call.ended` settles nudge calls |
 
 With `CALLER_PIN` set, each memory and reminder tool also takes `pin` (`whats_today` does not); without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Every supplied PIN is counted before it is compared, so at most five guesses per caller number are evaluated in 15 minutes, however many arrive at once; `/mcp` also rejects JSON-RPC batches.
 
@@ -141,38 +140,83 @@ Memories live on the phone. Each request carries only the snippets needed for on
 
 To enable Steph in production, set `RECALL_APP_TOKEN` (`openssl rand -hex 32`, different from the other tokens), `ANTHROPIC_API_KEY` and optionally `VOYAGE_API_KEY` in the Vercel project's Production environment, redeploy, and give the same app token to the iOS build. Check that an unauthenticated `POST /ask` returns 401.
 
-## Steph's phone line and reminders
+## Steph everywhere
 
-Steph's Dial number is **+1 240 896 2183** (Dial nickname `Steph`, default `STEPH_NUMBER`). Its inbound instruction is `backend/voice/instructions.txt`. When configured, calling it reaches Steph; reminder calls and texts come from it. A real hosted reminder call and SMS delivery still need separate validation.
+Steph is one agent with one memory and one conversation history, whether the person talks in the app, calls her, texts her, or she reaches them. Her number is **+1 240 896 2183** (Dial nickname `Steph`, `STEPH_NUMBER`). The app contract is [docs/steph-api.md](docs/steph-api.md).
 
-A caller says, "Remind me in ten minutes to take the laundry out" or "Remind me tomorrow at 9 to call Sarah." Steph calls `whats_today` for clock times, then `set_reminder`, and reads back the spoken time. The reminder is stored in the `reminders` table. Every minute Vercel Cron calls `/cron/dial-reminders`, which claims due reminders under a two-minute database lease and phones the caller from Steph's line, or texts them for `channel: "text"`. On a reminder call, the same person can ask to be reminded again.
+```mermaid
+flowchart LR
+    App[iPhone app: orb, cards] -->|/v1, session token| Brain
+    SMS[Texts to Steph] -->|Dial webhook message.received| Brain
+    Call[Calls with Steph] -->|Dial Context MCP: same tools| Tools
+    Brain[StephBrain: Claude tool loop] --> Tools[Tool registry]
+    Tools --> Memory[(memories, timeline, nudges)]
+    Cron[Vercel Cron /cron/steph] --> Proactive[Proactive engine] --> Router[ChannelRouter]
+    Brain --> Router
+    Router -->|app · push · text · call| Out[APNs / Dial]
+    Transcripts[call.transcribed] --> Memory
+```
 
-- **Outcome:** the signed `call.ended` webhook marks an answered call `delivered`. A busy, unanswered, failed or cancelled call becomes `missed` and gets one fallback text. Transitions are conditional updates, so redeliveries and concurrent requests cannot send a second text.
-- **Retries:** call placement uses the Dial `Idempotency-Key` `reminder-<id>`, so a retried claim returns the original call instead of dialing again. Transient errors retry for up to 3 attempts. A 4xx (for example 402, no credit) fails at once. Texts have no idempotency key and are never retried.
-- **Lost webhooks:** a reminder still `calling` after 10 minutes is settled from `GET /calls/{id}` only once Dial reports the call terminated.
-- **Times:** spoken and local times use `TIMEZONE`, then the Google calendar's zone, then UTC. Set `TIMEZONE` for the person's zone.
-- `shortcut:` an answered call counts as delivered even if voicemail picked up; check the transcript if that matters. Calls are capped at 180 s while the Dial account is on its free tier (300 s maximum, 2 concurrent calls).
+- **One brain** (`backend/brain/brain.mjs`): every channel becomes `{user, channel, text, context}`. Claude (`STEPH_MODEL`) runs with one system prompt (`persona.mjs`) and one tool registry (`tools.mjs`), and replies through a `reply` tool that cites memory ids. Cards keep only ids a tool returned in that turn. The recent timeline across all channels goes in as data. Calls use the same persona: `backend/voice/instructions.txt` is generated from it (`npm run persona`; a test keeps them equal), and Dial's Context MCP serves the same registry.
+- **One memory** (`steph_memories`): each source writes normalized `{type, summary, people, place, time, source, confidence, details}`. The phone uploads text only (`/v1/memories/sync`), never images. Google sources write through the same store, and calls, texts and the app add Steph's own records. "Forget that" deletes a memory everywhere and tombstones it so no sync brings it back.
+- **One timeline** (`steph_timeline`): every exchange on every channel, including call transcripts after `call.transcribed`.
+- **ChannelRouter** (`router.mjs`), in order:
+  1. The person's explicit choice.
+  2. In the app: answer in the orb with a card.
+  3. Urgent and needs a response, or a push ignored for 10 minutes: call.
+  4. Information to keep: text.
+  5. A nudge while the app is closed: push, then text after the grace period.
+  6. Quiet hours (21:00–08:00 by default) hold calls and texts unless the item is marked "wake me".
+  7. At most 2 calls and 5 texts a day that Steph starts herself.
 
-### Connect Dial
+  Each decision is stored with a reason ("texted: it's something you'll need later") and shown in `/v1/diagnostics`.
+- **Proactive engine** (`proactive.mjs`, `/cron/steph` every minute):
+  - reminders and scheduled calls;
+  - medication: a nudge, then a call after 10 ignored minutes, then a text to the contact the person named;
+  - the morning briefing, spoken in the app when it is open, otherwise one text;
+  - flight leave-by texts with gate and confirmation number;
+  - appointment calls;
+  - the caregiver's daily summary.
 
-1. Verify the production [health endpoint](https://recall-kappa-nine.vercel.app/health), or use a development HTTPS tunnel when testing a local backend.
-2. Apply `npm run db:init` on the isolated preview database and verify the preview before applying the same schema to production; the schema adds the `reminders` table. Before enabling reminders, set `DIAL_API_KEY`, a separate `CRON_SECRET`, `DEMO_CALLER_NUMBER` (the consented caller, never committed), `CALLER_PIN`, `TIMEZONE`, and `DEMO_MODE=false` in the intended environment, then redeploy. The existing Vercel Pro plan supports the per-minute reminder cron.
-3. Connect the Context MCP (account-wide) and the webhook. Use that environment's `DIAL_MCP_TOKEN`. Put the returned `whsec_…` secret in `DIAL_WEBHOOK_SECRET` and redeploy. Keep `CRON_SECRET` configured even when Google is disabled: scheduled retention cleanup must not depend on another webhook arriving.
+  Claims hold a database lease, and calls reuse a Dial idempotency key; a lost `call.ended` is settled from `GET /calls/{id}`.
+- **Identity:**
+  - **Sign-in:** "Continue with Google" reuses the single encrypted Google connection (DEC-016), "Use Apple instead" is verified against Apple's keys, and the app holds a random session token whose hash is stored.
+  - **Phone number:** verified with a code Steph texts. It is how she recognizes the person on calls and texts.
+  - **Caregivers:** a caregiver links a patient by the patient's verified number; the device session becomes the patient's.
+  - **Legacy callers:** the old `DEMO_CALLER_NUMBER` allowlist still works, and merges into the account that later verifies that number.
+- **Safety:**
+  - **Needs a yes:** deleting a memory and disconnecting Google run only on an explicit yes, either a tapped Yes or the person's own "yes" (checked on the server). Steph has no tool to send email or to edit events she did not create.
+  - **Data, not instructions:** email, calendar, contact, OCR and transcript text is fenced as data.
+  - **Logs:** they never contain memory content and only show masked numbers.
+  - **Tokens:** third-party tokens stay on the backend, encrypted.
+
+### Phone access (Dial Context MCP)
+
+| Tool access | Allowed when |
+| --- | --- |
+| Memory (`search_memories`, `get_schedule`, `search_messages`, `find_object`, `recent_conversation`, `list_reminders`) | A known caller on an inbound call (DEC-005), or the verified person on Steph's line in either direction (Steph's outbound calls only ring a verified number) |
+| Actions (reminders, calendar, `send_text`, medication, settings) | The verified person on Steph's line, inbound or outbound |
+| `whats_today` | Either of the above; no PIN |
+
+With `CALLER_PIN` set, memory and action tools also need the PIN. `forget`, `confirm_pending` and `disconnect_google` are app and text only, because a spoken yes on a call is not visible to the backend.
+
+### Connect Steph in an environment
+
+1. Run `npm run db:init` against that environment's database (preview first): it adds the `steph_*` tables.
+2. Set `DIAL_API_KEY`, `ANTHROPIC_API_KEY`, `CRON_SECRET`, `TIMEZONE`, `CALLER_PIN` and `DEMO_MODE=false`. Optional: `APPLE_BUNDLE_IDS` (Sign in with Apple), `APNS_KEY_ID`/`APNS_TEAM_ID`/`APNS_KEY`/`APNS_TOPIC` (push), and the Google settings for "Continue with Google" with redirect `https://…/google/callback`. Redeploy.
+3. Connect Dial's Context MCP (account-wide) and a webhook with **all three events**, using that environment's `DIAL_MCP_TOKEN`. Put the returned `whsec_…` secret in `DIAL_WEBHOOK_SECRET` and redeploy.
 
    ```sh
    curl -X POST https://api.getdial.ai/api/v1/context-mcps -H "Authorization: Bearer $DIAL_API_KEY" -H 'Content-Type: application/json' \
      -d '{"name":"Recall","url":"https://recall-kappa-nine.vercel.app/mcp","headers":{"Authorization":"Bearer '"$DIAL_MCP_TOKEN"'"}}'
    curl -X POST https://api.getdial.ai/api/v1/webhooks -H "Authorization: Bearer $DIAL_API_KEY" -H 'Content-Type: application/json' \
-     -d '{"targetUrl":"https://recall-kappa-nine.vercel.app/webhooks/dial","eventTypes":["call.ended","call.transcribed"]}'
+     -d '{"targetUrl":"https://recall-kappa-nine.vercel.app/webhooks/dial","eventTypes":["message.received","call.ended","call.transcribed"]}'
    ```
 
-4. Apply the persona after any edit: `dial number set +12408962183 --inbound-instruction "$(cat backend/voice/instructions.txt)"`.
-5. Call once with `DIAL_LOG_HEADERS=true`. The log lists the header names Dial sent, with phone numbers cut to their last four digits and other Dial values reduced to their length. If the caller and direction headers differ from the defaults, set `DIAL_CALLER_HEADER` and `DIAL_DIRECTION_HEADER`, then turn logging off.
-6. Ask for a reminder in two minutes and hang up. Check that the reminder call arrives, then that an unanswered call produces a text. Events such as `call.ended` and `call.transcribed` are stored once each; transcripts contain personal speech, so retention defaults to 30 days and the ten-minute Google-sync cron keeps pruning even after webhooks are switched off. Verify the scheduled invocation after deployment. On Vercel, `CRON_SECRET` is required with webhooks or Google; boot fails without it.
+4. Apply the persona after any edit: `npm run persona && dial number set +12408962183 --inbound-instruction "$(cat backend/voice/instructions.txt)"`.
+5. Call once with `DIAL_LOG_HEADERS=true` to confirm the caller headers, then turn it off. Text Steph, call Steph, and tap Call me / Text me in the app. Check that each exchange appears in the timeline and the decisions in Diagnostics.
 
-Locally, Vercel Cron does not run: trigger delivery with `curl -H "Authorization: Bearer $CRON_SECRET" http://127.0.0.1:3000/cron/dial-reminders`.
-
-Dial's [Context MCP documentation](https://docs.getdial.ai/documentation/platform/context-mcp) names `X-Dial-User-Number` (the other party), `X-Dial-Direction` and `X-Dial-Agent-Number` (your Dial number); step 5 confirms them on a live call. Memory tools require the configured caller on an inbound call. Reminder tools also allow outbound reminder calls to that caller, but only from `STEPH_NUMBER`. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller.
+Locally, Vercel Cron does not run: trigger it with `curl -H "Authorization: Bearer $CRON_SECRET" http://127.0.0.1:3000/cron/steph`. Dial reaches a local backend only through an HTTPS tunnel.
 
 Vercel Deployment Protection must allow Dial and the laptop uploader to reach the deployment. Their application bearer tokens do not bypass Vercel's login protection. Use the project's production domain with the intended access settings when connecting these external clients.
 
@@ -228,7 +272,7 @@ The repository is configured for Vercel Services with a single Express service:
   ],
   "crons": [
     { "path": "/cron/google-sync", "schedule": "*/10 * * * *" },
-    { "path": "/cron/dial-reminders", "schedule": "* * * * *" }
+    { "path": "/cron/steph", "schedule": "* * * * *" }
   ]
 }
 ```
@@ -260,12 +304,15 @@ For schema or configuration changes to the existing deployment:
 | `ADMIN_TOKEN`, `GOOGLE_*` | Backend | Google connection and sync; see [Google connection](#google-connection) |
 | `CRON_SECRET` | Backend / Vercel Cron | At least 32 characters; required with hosted Google sync, Dial webhooks or reminders so scheduled requests can authenticate |
 | `DIAL_WEBHOOK_SECRET`, `DIAL_*_HEADER`, `DIAL_LOG_HEADERS` | Backend | Dial webhooks and caller-header names |
-| `DIAL_API_KEY` | Backend only | Dial `sk_live_` key for reminder calls and texts; unset turns reminders off |
+| `DIAL_API_KEY` | Backend only | Dial `sk_live_` key for Steph's calls and texts; unset turns Steph's phone tools, delivery and inbound handling off |
+| `APPLE_BUNDLE_IDS` | Backend | Comma-separated bundle IDs accepted as the audience of Sign in with Apple tokens; unset disables Apple sign-in |
+| `APP_CALLBACK_URL` | Backend | Where Google sign-in returns to the app; default `recall://auth` |
+| `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY`, `APNS_TOPIC` | Backend only | APNs token auth (.p8 contents, bundle ID topic); all or none. Without them Steph never chooses push |
 | `STEPH_NUMBER` | Backend | Steph's Dial line; defaults to `+12408962183` |
 | `KEEWANO_API_KEY` | Backend | Optional Keewano analytics; empty disables it |
 | `PORT` | Local server/Compose | Default `3000`; Vercel manages its service port |
 | `RECALL_APP_TOKEN` | Backend and iOS app | At least 32 characters, distinct from the other tokens; empty disables Steph's endpoints |
-| `ANTHROPIC_API_KEY` | Backend only | Claude for `/ask` and `/reminders`; empty returns 503 |
+| `ANTHROPIC_API_KEY` | Backend only | Claude for StephBrain (`/v1/steph/message`, inbound texts, call facts) and the legacy `/ask` and `/reminders`; empty returns 503 and the app answers on-device |
 | `STEPH_MODEL` | Backend only | Defaults to `claude-opus-5-5` |
 | `VOYAGE_API_KEY` | Backend only | Voyage AI embeddings for `/embed`; empty returns 503 |
 | `EMBED_MODEL` | Backend only | Defaults to `voyage-3.5-lite` |

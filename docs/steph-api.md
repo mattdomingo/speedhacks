@@ -88,7 +88,8 @@ When the permission chain finishes, call `POST /v1/setup/complete` `{"time_zone"
 
 - `POST /v1/steph/call-me` `{}` → `{"call_id":"…","status":"queued"}`. Steph calls the verified number now. The call opens with the last thing she said in the app, and the full Steph persona and tools are available on the call. User-initiated, so not capped.
 - `POST /v1/steph/text-me` `{"text"?: "…"}` → `{"message_id":"…","sent_at":"…","text":"…"}`. Texts what Steph just said in the app (her last app reply), or `text` when given.
-- Both return 409 `{"error":"Verify your phone number first"}` without a verified number, and 503 when Dial is not configured.
+- Both return 409 `{"error":"Verify your phone number first"}` without a verified number, 409 `{"error":"<router reason>"}` when that channel is switched off, and 503 when Dial is not configured.
+- Medication cards offer a **Taken** button that sends `/v1/steph/message` with "I took my medicine"; Steph logs it, which stops the escalation.
 
 ## Orb status
 
@@ -104,10 +105,12 @@ When the permission chain finishes, call `POST /v1/setup/complete` `{"time_zone"
 
 - `calling` takes priority, then an unread text from the last 12 hours, then the next scheduled call within 12 hours.
 - Tapping the texted orb opens `message` as a card and sends `POST /v1/timeline/{id}/seen`, which clears the dot.
+- `"say": {"id":"t_…","text":"Good morning! Today: …","kind":"briefing"|"reminder"|"medication"|"leave_by"|"message"}` appears when Steph delivered something by voice in the app (rule 2), such as the morning briefing while the app is open. Speak it with a card, then `POST /v1/timeline/{id}/seen`.
+- Polling this endpoint is how the backend knows the app is open; the router treats the app as open for 30 seconds after a poll.
 
 ## Timeline
 
-`GET /v1/timeline?before=<iso>&limit=50` → `{"entries":[{"id":"t_…","channel":"app"|"call"|"sms"|"push","direction":"in"|"out","text":"…","at":"…","call_id"?:"…"}]}`, newest first. Every exchange on every channel is here, including call transcripts after `call.transcribed`.
+`GET /v1/timeline?before=<iso>&limit=50` → `{"entries":[{"id":"t_…","channel":"app"|"call"|"sms"|"push","direction":"in"|"out","text":"…","at":"…","kind":"message"|"reply"|"transcript"|"call_placed"|"say"|"confirm"|…,"seen":false,"call_id"?:"…"}]}`, newest first. Every exchange on every channel is here, including call transcripts after `call.transcribed`.
 
 ## Diagnostics
 
@@ -119,7 +122,8 @@ When the permission chain finishes, call `POST /v1/setup/complete` `{"time_zone"
  "counts_today": {"calls": 1, "texts": 2, "limits": {"calls": 2, "texts": 5}},
  "quiet_hours": {"start":"21:00","end":"08:00","active":false},
  "sources": [{"name":"google-calendar","state":"ok","count":214,"last_sync":"…"}],
- "push": {"registered": true}}
+ "push": {"registered": true, "configured": true},
+ "phone": "…0123"}
 ```
 
 ## Memories from the phone
@@ -131,7 +135,7 @@ The phone keeps its on-device indexing: PhotoKit + Vision, EventKit, Contacts, l
 
 ## Push notifications
 
-- `POST /v1/devices` `{"apns_token":"<hex>","environment":"sandbox"|"production"}` → `{"registered":true}`.
+- `POST /v1/devices` `{"apns_token":"<hex>","environment":"sandbox"|"production"}` → `{"registered":true,"push_configured":true|false}`.
 - A push payload carries `{"aps":{...},"steph":{"timeline_id":"t_…","kind":"reminder"|"medication"|"briefing"|"leave_by"}}`. When the person opens it, send `POST /v1/push/{timeline_id}/opened`. An urgent push not opened within 10 minutes escalates to a call; a normal one escalates to a text after its grace period.
 - Pushes need `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY` and `APNS_TOPIC` on the backend. Without them the router never picks push and falls back to text.
 
