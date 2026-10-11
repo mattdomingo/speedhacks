@@ -1,6 +1,6 @@
 # Object-memory validation — October 11, 2026
 
-Implementation checks passed locally. The later Flash-Lite recovery check below confirmed all three real objects through hosted MCP. The formal 18-placement tabletop acceptance remains deferred; one floor arrangement is not an accuracy benchmark.
+Implementation checks passed locally. The later Flash-Lite and occlusion-fix checks below confirmed all three real objects through hosted MCP. The formal 18-placement tabletop acceptance remains deferred; the limited floor checks are not that accuracy benchmark.
 
 | Check | Actual result |
 | --- | --- |
@@ -68,3 +68,28 @@ After updating and redeploying the production configuration, only transient back
 This is positive camera → hosted inference → two-frame confirmation → Postgres → MCP evidence for one real arrangement of all three categories. It does not establish the 16/18 tabletop target, occlusion/pickup behavior with real objects, or a working phone call. Paid usage from diagnostic calls is separate from hosted counters; failed requests may also be billed.
 
 Across the first live Flash-Lite run, hosted attempts increased from 17 to 28 (11 successful analyses). Returned usage increased by 15,951 total tokens: 13,816 input and 2,135 output, with zero additional thought tokens. Throttled uploads made no inference request. These are reported token counts, not a billing total.
+
+## October 11, 2026 — Partial-occlusion failure and fix
+
+The user shortened the placement procedure to three unique layouts instead of six repeated rounds. Two layouts passed (6/6 object locations); first fresh retrievals took 8.1 and 12.9 seconds from the testing command, not precisely from physical placement. The third layout is pending. These were floor arrangements, so they do not meet the formal tabletop acceptance gate.
+
+The subsequent cap-over-phone check failed on the previous implementation: captures at 20:56:46Z and 20:56:52Z stored the phone as resting on top of the cap. Visual inspection of the retained evidence showed the cap covering part of the phone. Stable category/bounding boxes and `uncertain:false` were insufficient to validate visibility or the spatial relationship.
+
+Commit `ca8f40a` adds required `clear|partially_occluded|unclear` visibility and accepts only two consecutive clear detections. A partially obscured or legacy candidate cannot confirm even when identity is certain. The public/manual contracts, databases, and dependencies are unchanged. The change preserves existing records; it does not automatically repair a bad record from an older version.
+
+| Check | Actual result |
+| --- | --- |
+| Clear real-image diagnostic | All three categories assessed clear; 6,183 ms; 1,651 total tokens |
+| Covered real-image diagnostics | Both calls assessed the phone partially occluded despite `uncertain:false`; 4,895 / 4,756 ms; 1,593 / 1,570 total tokens. Neither result is eligible to update memory |
+| Hosted covered scene | Existing phone record, timestamp, and JPEG hash stayed identical across fresh analyzed captures at 21:06:02Z and 21:06:12Z |
+| Uncovered recovery on the verified fix build | All three categories explicitly clear and freshly confirmed at 21:09:30Z, 21:09:41Z, and 21:09:51Z; observed inference latency 2,136–2,477 ms |
+| PIN-authenticated hosted MCP at 21:09:46Z | All three aliases returned `supported`, `demo:false`, camera `live`, and capture time 21:09:41Z. Wallet left, keys center, phone right matched the retained photo |
+| Local checks | SQLite: 91 passed, 2 Postgres-only skips; disposable Postgres: 93 passed; Python: 7 passed; codegen check passed |
+| Hosted CI | Push and PR checks passed for `ca8f40a`, including SQLite, Postgres 17, and Python |
+| Production access checks | Public liveness and protected-route smoke checks passed after deployment |
+
+A concurrent deployment of `main` replaced the first fix deployment during testing. That version was detected through deployment metadata and candidates missing visibility; its recovery result was excluded. The fix was redeployed as `dpl_oTBTQCPT5ttunVqsTGud4TRwtGwu` before the verified recovery/MCP checks above. PR #6 remains open; a later deployment from unpatched `main` would replace this test build again.
+
+The three direct diagnostic requests used 4,814 reported total tokens and did not write memories or count as fresh frames. Hosted recovery usage increased by 3,300 total tokens across two subsequent analyses (2,776 input, 524 output). These are observed usage windows, not a complete bill. Private diagnostic JPEGs were removed after review.
+
+This verifies the reported cap-over-phone failure and recovery in the tested scene. Visibility is still judged by the model. Controlled noisy-video, low-light, blur, complete concealment, pickup, and the full 18-placement tabletop acceptance remain unverified by this run.
