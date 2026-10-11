@@ -4,7 +4,7 @@ One stationary camera, one user, one keys/phone/wallet instance each, on a fixed
 
 ## Start
 
-1. Install dependencies and create local secrets with `npm ci && npm run setup`. In the ignored backend `.env`, set `GEMINI_API_KEY` from a paid Gemini project, `DEMO_MODE=false`, and the existing `DEMO_CALLER_NUMBER` allowlist. Never put the provider key in camera-only configuration or phone code.
+1. Install dependencies and create local secrets with `npm ci && npm run setup`. In the ignored backend `.env`, set `GEMINI_API_KEY` from a paid Gemini project, `VISION_MODEL=gemini-3.5-flash-lite`, `DEMO_MODE=false`, and the existing `DEMO_CALLER_NUMBER` allowlist. Never put the provider key in camera-only configuration or phone code.
 2. For Vercel, use the existing managed Postgres connection and run `npm run db:init` against that environment. The additive schema preserves evidence and raw frames. Local SQLite migrates additively on open. These changes do not import SQLite records into Postgres.
 3. Start the backend with `npm start`, or use its deployed HTTPS origin. The camera needs only `CAMERA_TOKEN` and `BACKEND_URL`; the local npm convenience command loads `.env`.
 4. Install `camera/requirements.txt` in `.venv`, allow macOS camera access, then run `PYTHON=.venv/bin/python npm run camera -- --preview`. Preview also uploads. Aim at the tabletop so small keys are clearly resolved; keep the camera fixed and laptop awake. Press `q` to stop, or use Ctrl-C without preview.
