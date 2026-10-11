@@ -85,10 +85,10 @@ Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch 
 | `POST /google/sync` | `Bearer ADMIN_TOKEN` | Sync Calendar and Gmail now |
 | `DELETE /google/connection` | `Bearer ADMIN_TOKEN` | Revoke at Google and delete synced Google evidence |
 | `GET /cron/google-sync` | `Bearer CRON_SECRET` | Vercel Cron: sync Google and prune expired Dial events |
-| `GET /cron/dial-reminders` | `Bearer CRON_SECRET` | Vercel Cron, every minute: deliver due reminders, settle calls whose webhook never arrived |
-| `POST /webhooks/dial` | `X-Dial-Signature` HMAC | Store Dial call/message events (deduplicated, pruned after retention); `call.ended` settles reminder calls |
+| `GET /cron/dial-reminders` | `Bearer CRON_SECRET` | Vercel Cron, every minute: submit due reminders and reconcile call/text outcomes |
+| `POST /webhooks/dial` | `X-Dial-Signature` HMAC | Store Dial events (deduplicated, pruned after retention); `call.ended` settles calls and `message.status_changed` settles text delivery |
 
-With `CALLER_PIN` set, each memory and reminder tool also takes `pin` (`whats_today` does not); without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Every supplied PIN is counted before it is compared, so at most five guesses per caller number are evaluated in 15 minutes, however many arrive at once; `/mcp` also rejects JSON-RPC batches.
+With `CALLER_PIN` set, each memory and reminder tool also takes `pin` (`whats_today` does not); without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Wrong attempts are counted atomically, including concurrent requests; five wrong PINs cause lockout for the remainder of the 15-minute failure window. A correct PIN before lockout resets the count; a missing PIN does not increment it. `/mcp` also rejects JSON-RPC batches.
 
 Observation body:
 
