@@ -90,6 +90,8 @@ Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch 
 
 With `CALLER_PIN` set, each memory and reminder tool also takes `pin` (`whats_today` does not); without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Every supplied PIN is counted before it is compared, so at most five guesses per caller number are evaluated in 15 minutes, however many arrive at once; `/mcp` also rejects JSON-RPC batches.
 
+For the owner's supervised October 11 phone demo, Production temporarily leaves `CALLER_PIN` unset so the allowed caller can use memory tools without a PIN. Bearer authentication, the caller allowlist, and inbound-only memory access still apply. This is the explicit [DEC-021 demo exception](AGENTS.md#dec-021--temporarily-omit-the-pin-for-the-supervised-phone-demo); the stronger authentication guidance below still applies outside that exception. Re-enable a backend PIN and redeploy to restore the prompt and check.
+
 Observation body:
 
 ```json
