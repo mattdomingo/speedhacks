@@ -4,6 +4,7 @@ import { localDate, localInstant } from '../time.mjs';
 
 const LEASE_MS = 2 * 60_000;
 const SETTLE_AFTER_MS = 10 * 60_000;
+const MESSAGE_POLL_MS = 60_000;
 const MAX_AHEAD_MS = 30 * 86_400_000;
 const MAX_CALL_ATTEMPTS = 3;
 // shortcut: free Dial accounts cap calls at 300 s; raise after the account is topped up if reminders need longer.
@@ -13,6 +14,25 @@ const CALL_SECONDS = 180;
 export class ReminderError extends Error {}
 
 const iso = ms => new Date(ms).toISOString();
+
+// Dial accepts a send before its carrier reports delivery. Keep legacy aliases for
+// older responses, but absence of a receipt is never evidence of delivery/failure.
+function messageStatus(message) {
+  const state = message?.deliveryState ?? message?.status;
+  if (state === 'delivered') return 'delivered';
+  if (state === 'failed' || state === 'undelivered') return 'failed';
+  if (state === 'pending' || state === 'sent') return 'pending';
+  if (state === 'unconfirmed' || state === 'unknown') return 'unknown';
+}
+
+function receipt(event) {
+  const data = event?.data;
+  if (event?.type !== 'message.status_changed' ||
+      (data?.direction !== undefined && data.direction !== 'outbound') ||
+      typeof data?.messageId !== 'string' || !data.messageId || data.messageId.length > 200) return;
+  const status = messageStatus(data);
+  if (status) return { id: data.messageId, status };
+}
 
 export function spokenTime(ms, timeZone) {
   return new Intl.DateTimeFormat('en-US', {
@@ -49,8 +69,37 @@ export function createReminders(config, store, { dial = null, now = Date.now, ti
     if (!dial) throw new ReminderError('Reminders are not switched on yet, so I cannot set one right now.');
   }
 
-  async function sendText(to, body) {
-    return dial.sendText({ to, from, body });
+  async function replayReceipt(reminderId, messageId) {
+    const update = receipt(await store.messageReceipt(messageId));
+    if (!update) return false;
+    return store.updateReminderMessage(reminderId, { message_id: messageId, message_status: update.status }, iso(now()));
+  }
+
+  // The caller has already durably reserved this one non-idempotent send. A crash
+  // before/after HTTP, a timeout, or a missing provider ID remains unknown; never resend.
+  async function sendText(reminder, body) {
+    let message;
+    try {
+      message = await dial.sendText({ to: reminder.patient_number, from, body });
+      if (typeof message?.id !== 'string' || !message.id || message.id.length > 200 ||
+          (message.direction !== undefined && message.direction !== 'outbound')) {
+        throw new Error('Dial message response has no usable outbound ID');
+      }
+    } catch (error) {
+      // A request timeout/server error can occur after acceptance. Only an explicit
+      // client rejection establishes that this send failed.
+      const rejected = error.status >= 400 && error.status < 500 && error.status !== 408;
+      await store.updateReminderMessage(reminder.id, { message_status: rejected ? 'failed' : 'unknown' }, iso(now()));
+      console.error('Reminder text request failed:', error.status ?? 'delivery unknown');
+      return false;
+    }
+    // Database failures propagate: changing an accepted send to failed would lie.
+    await store.updateReminderMessage(reminder.id, {
+      message_id: message.id, message_status: messageStatus(message) ?? 'unknown',
+    }, iso(now()));
+    // An authenticated receipt can arrive before the HTTP response gives us its ID.
+    await replayReceipt(reminder.id, message.id);
+    return true;
   }
 
   // Answered calls count as delivered; anything else gets one fallback text, sent by whichever request wins the update.
@@ -58,16 +107,8 @@ export function createReminders(config, store, { dial = null, now = Date.now, ti
     if (status === 'completed') {
       return store.updateReminder(reminder.id, 'calling', { status: 'delivered', outcome: 'answered' }, iso(now()));
     }
-    if (!await store.updateReminder(reminder.id, 'calling', { status: 'missed', outcome: status }, iso(now()))) return false;
-    if (!dial) return true;
-    let outcome = `${status}; texted`;
-    try {
-      await sendText(reminder.patient_number, `Steph (AI assistant) tried to call with your reminder: ${reminder.text}`);
-    } catch (error) {
-      console.error('Missed-call reminder text failed:', error.message);
-      outcome = `${status}; text failed`;
-    }
-    await store.updateReminder(reminder.id, 'missed', { status: 'missed', outcome }, iso(now()));
+    if (!await store.claimReminderFallback(reminder.id, status, iso(now()))) return false;
+    await sendText(reminder, `Steph (AI assistant) tried to call with your reminder: ${reminder.text}`);
     return true;
   }
 
@@ -120,17 +161,17 @@ export function createReminders(config, store, { dial = null, now = Date.now, ti
       return { status: 'canceled', id };
     },
 
-    // Called every minute by Vercel Cron (/cron/dial-reminders). Each claim holds a database lease, so overlapping runs never double-send.
+    // Calls have retryable leases and an idempotency key; texts are reserved once,
+    // outside lease reclamation, before the first request can reach Dial.
     async dispatch() {
       requireDial();
       const zone = await timeZone();
-      const result = { called: 0, texted: 0, failed: 0, settled: 0 };
+      const result = { called: 0, submitted: 0, failed: 0, settled: 0 };
       for (const reminder of await store.claimDueReminders(iso(now()), iso(now() + LEASE_MS))) {
         try {
           if (reminder.channel === 'text') {
-            await sendText(reminder.patient_number, `Steph (AI assistant) reminder: ${reminder.text}`);
-            await store.updateReminder(reminder.id, 'sending', { status: 'delivered', outcome: 'texted' }, iso(now()));
-            result.texted++;
+            if (await sendText(reminder, `Steph (AI assistant) reminder: ${reminder.text}`)) result.submitted++;
+            else result.failed++;
           } else {
             const call = await dial.placeCall({
               to: reminder.patient_number, from, instruction: callInstruction(reminder, zone),
@@ -141,10 +182,10 @@ export function createReminders(config, store, { dial = null, now = Date.now, ti
           }
         } catch (error) {
           console.error('Reminder delivery failed:', error.message);
-          // Texts have no idempotency key, and a 4xx will not fix itself, so neither is retried.
-          // Other call failures keep the lease and retry with the same key, which never dials twice.
-          const permanent = reminder.channel === 'text' || (error.status >= 400 && error.status < 500 && error.status !== 429);
-          if (permanent || reminder.attempts >= MAX_CALL_ATTEMPTS) {
+          // A text is already non-reclaimable even if persisting its response fails.
+          // Call failures retain the lease and retry using the same idempotency key.
+          const permanent = error.status >= 400 && error.status < 500 && error.status !== 429;
+          if (reminder.channel === 'call' && (permanent || reminder.attempts >= MAX_CALL_ATTEMPTS)) {
             await store.updateReminder(reminder.id, 'sending', { status: 'failed', outcome: error.message }, iso(now()));
           }
           result.failed++;
@@ -159,11 +200,52 @@ export function createReminders(config, store, { dial = null, now = Date.now, ti
           console.error('Reminder call status check failed:', error.message);
         }
       }
+      for (const reminder of await store.unsettledMessages(iso(now() - MESSAGE_POLL_MS))) {
+        try {
+          // Replay stored receipts first, then recover a lost webhook from provider
+          // history. Dial exposes only the newest 100 matching messages, no ID lookup.
+          const stored = receipt(await store.messageReceipt(reminder.message_id));
+          if (stored && ['delivered', 'failed'].includes(stored.status)) {
+            if (await store.updateReminderMessage(reminder.id, {
+              message_id: reminder.message_id, message_status: stored.status,
+            }, iso(now()))) result.settled++;
+            continue;
+          }
+          const message = await dial.getMessage(reminder.message_id, {
+            to: reminder.patient_number,
+            // since filters message creation, not receipt time: never use last poll.
+            since: iso(Date.parse(reminder.due_at) - 60_000),
+          });
+          const matched = message?.id === reminder.message_id &&
+            (message.direction === undefined || message.direction === 'outbound');
+          const reported = matched ? messageStatus(message) : undefined;
+          const status = reported === 'unknown' && reminder.message_status === 'pending'
+            ? 'pending' : reported ?? reminder.message_status;
+          if (await store.updateReminderMessage(reminder.id, {
+            message_id: reminder.message_id, message_status: status,
+          }, iso(now())) && ['delivered', 'failed'].includes(status)) result.settled++;
+        } catch (error) {
+          // Retain unresolved state on absence/errors. Touch for fair bounded polling.
+          await store.updateReminderMessage(reminder.id, {
+            message_id: reminder.message_id, message_status: reminder.message_status,
+          }, iso(now()));
+          console.error('Reminder text status check failed:', error.status ?? 'unavailable');
+        }
+      }
       return result;
     },
 
     async handleEvent(event) {
-      if (!dial || event.type !== 'call.ended' || !event.data?.callId) return false;
+      if (!dial) return false;
+      const update = receipt(event);
+      if (update) {
+        const reminder = await store.reminderByMessage(update.id);
+        if (!reminder) return false;
+        return store.updateReminderMessage(reminder.id, {
+          message_id: update.id, message_status: update.status,
+        }, iso(now()));
+      }
+      if (event.type !== 'call.ended' || !event.data?.callId) return false;
       const reminder = await store.reminderByCall(event.data.callId);
       if (!reminder || reminder.status !== 'calling') return false;
       return settleCall(reminder, event.data.status);

@@ -201,6 +201,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** In the real cap-over-phone test, identity and overlapping boxes stayed stable while the model marked the detection certain and invented an incorrect support relationship. Identity confidence is insufficient evidence of visibility. Two direct calls with the new schema on a real covered-phone image marked it partially occluded even with `uncertain:false`. This remains a model-based check; it is not proof against every occlusion or noisy scene. No new service, dependency, database migration, or image archive is introduced.
 - **Sources / validation:** `backend/physical/vision.mjs`, `backend/physical/confirm.mjs`, and focused SQLite/Postgres regression coverage; [dated validation](docs/object-memory-validation.md).
 
+### DEC-020 — Confirm SMS delivery and never resend ambiguous attempts
+
+- **Date / status / responsible:** 2026-10-11 / Accepted; amends [DEC-014](#dec-014--phone-reminders-through-dial-delivered-by-vercel-cron) / Engineers 1 and 2.
+- **Decision:** Persist a non-reclaimable text attempt before calling Dial, separately store the provider message ID and delivery state, and mark a text delivered only from provider delivery evidence. Settle direct and fallback texts from signed `message.status_changed` events or outbound history matched by exact message ID. Preserve missed-call status independently of the fallback text. Migrate both SQLite and Postgres; historical text outcomes without delivery proof become unknown and are not resent.
+- **Reason and consequences:** Dial's send endpoint acknowledges queuing, not carrier delivery, and has no idempotency key. A timeout or process crash can leave an unknown outcome; retrying risks duplicate messages. Call leases and idempotency remain unchanged. Message-history polling is limited to the newest 100 matching messages, so absent records remain unresolved. US SMS also requires carrier registration; truthful status tracking does not enable an unregistered number. Adding account-wide message-status webhook events requires approval of that data connection; polling can operate without it.
+- **Sources / validation:** `backend/voice/reminders.mjs`, `backend/voice/dial.mjs`, both voice stores, `backend/schema.sql`, focused reminder and migration regressions; [Dial delivery contract](https://docs.getdial.ai/api-reference/events/message-status-changed), [message history](https://docs.getdial.ai/api-reference/rest-api/messages/list-messages). Real reminder calls and SMS delivery remain separate acceptance checks in [digital-memory validation](docs/digital-memory-validation.md).
+
 Copy this template for the next decision:
 
 ```markdown
