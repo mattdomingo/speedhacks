@@ -1,12 +1,14 @@
 import { Pool } from 'pg';
 import { attachDatabasePool } from '@vercel/functions';
 import { randomUUID } from 'node:crypto';
+import { postgresCameraStore } from './physical/store-postgres.mjs';
 
 export function openPostgresStore(connectionString) {
   const pool = new Pool({ connectionString, max: 3, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 5_000 });
   attachDatabasePool(pool);
   pool.on('error', error => console.error('Idle database connection failed:', error.code));
   return {
+    ...postgresCameraStore(pool),
     async put(record) {
       await pool.query('INSERT INTO evidence (id, source, timestamp, payload) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING',
         [record.id, record.source, record.timestamp, record]);
@@ -24,9 +26,10 @@ export function openPostgresStore(connectionString) {
       return record;
     },
     async saveFrame(timestamp, jpeg) {
-      await pool.query(`INSERT INTO latest_frame (slot, timestamp, jpeg) VALUES (1, $1, $2)
+      const result = await pool.query(`INSERT INTO latest_frame (slot, timestamp, jpeg) VALUES (1, $1, $2)
         ON CONFLICT (slot) DO UPDATE SET timestamp=excluded.timestamp, jpeg=excluded.jpeg
-        WHERE excluded.timestamp::timestamptz >= latest_frame.timestamp::timestamptz`, [timestamp, jpeg]);
+        WHERE excluded.timestamp::timestamptz > latest_frame.timestamp::timestamptz`, [timestamp, jpeg]);
+      return result.rowCount > 0;
     },
     async latestFrame() {
       const { rows } = await pool.query('SELECT timestamp, jpeg FROM latest_frame WHERE slot = 1');
