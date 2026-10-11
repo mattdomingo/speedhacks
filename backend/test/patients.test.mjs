@@ -181,3 +181,19 @@ test('when Dial is down, notify_caregiver says to call 911 and works again once 
   assert.equal((await a.callTool({ name: 'notify_caregiver', arguments: { reason: 'I feel dizzy' } })).isError, undefined);
   assert.equal(dial.texts.length, 1);
 });
+
+test('re-seeding the demo replaces stale demo records but keeps real ones', async t => {
+  const store = await testStore(t);
+  const now = new Date('2026-10-11T20:00:00Z');
+  await store.put({ id: 'demo-keys-2026-10-11', source: 'camera', object: 'keys', location: 'beside the blue mug on the desk',
+    timestamp: now.toISOString(), text: 'DEMO: old story', demo: true });
+  await store.put({ id: 'camera-real-1', source: 'camera', object: 'wallet', location: 'in the hallway',
+    timestamp: now.toISOString(), text: 'wallet last seen in the hallway', demo: false });
+  await seedDemo(store, now, 'America/Los_Angeles');
+  await seedDemo(store, now, 'America/Los_Angeles');
+  const camera = await store.list('camera');
+  const keys = camera.filter(record => record.object === 'keys');
+  assert.equal(keys.length, 1);
+  assert.equal(keys[0].location, 'on the kitchen counter, next to the fruit bowl');
+  assert.ok(camera.some(record => record.id === 'camera-real-1'), 'real evidence survives');
+});

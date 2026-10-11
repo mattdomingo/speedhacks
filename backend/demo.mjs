@@ -45,8 +45,11 @@ export function demoRecords(now = new Date(), timeZone = 'UTC') {
   ].map(record => ({ ...record, demo: true }));
 }
 
+// Replaces earlier demo records, so a story changed since the last seed never leaves stale
+// sample facts behind (inserts never overwrite an existing id).
 export async function seedDemo(store, now = new Date(), timeZone = 'UTC') {
   const records = demoRecords(now, timeZone);
+  await store.clearDemo();
   for (const record of records) await store.put(record);
   return records.length;
 }

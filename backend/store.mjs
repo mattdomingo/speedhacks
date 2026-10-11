@@ -32,6 +32,10 @@ export function openStore(dataDir) {
       db.prepare('INSERT OR IGNORE INTO evidence VALUES (?, ?, ?, ?)')
         .run(record.id, record.source, record.timestamp, JSON.stringify(record));
     },
+    // Only seeded sample records: ids start with demo- and the payload says demo.
+    clearDemo() {
+      db.prepare("DELETE FROM evidence WHERE id LIKE 'demo-%' AND json_extract(payload, '$.demo') = 1").run();
+    },
     list(source) {
       return db.prepare('SELECT payload FROM evidence WHERE source = ?')
         .all(source).map(row => JSON.parse(row.payload));
