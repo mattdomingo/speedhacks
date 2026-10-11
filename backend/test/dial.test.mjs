@@ -9,6 +9,7 @@ import { createServer } from 'node:http';
 import { testStore, TEST_DATABASE_URL, vercelHelpers } from './helpers.mjs';
 import { seedDemo } from '../demo.mjs';
 import { describeHeaders, verifyDialSignature } from '../voice/webhooks.mjs';
+import { smokeObjectMemory } from '../../scripts/smoke-object-memory.mjs';
 
 const config = readConfig({
   DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64), DIAL_WEBHOOK_SECRET: 'w'.repeat(32),
@@ -124,4 +125,11 @@ test('behind Vercel request helpers, signed webhooks and JSON routes still work'
   assert.equal(observation.status, 201);
   const malformed = await fetch(`${url}/camera/observations`, { method: 'POST', headers: camera, body: '{not json' });
   assert.equal(malformed.status, 400);
+});
+
+test('the MCP smoke client keeps working when the backend requires a PIN', async t => {
+  const { url } = await fixture(t, { CALLER_PIN: '4821', DEMO_MODE: 'false' });
+  await assert.rejects(smokeObjectMemory(url, config.DIAL_MCP_TOKEN, config.DEMO_CALLER_NUMBER), /returned an error/);
+  const results = await smokeObjectMemory(url, config.DIAL_MCP_TOKEN, config.DEMO_CALLER_NUMBER, '4821');
+  assert.deepEqual(Object.keys(results), ['my keys', 'cellphone', 'wallet']);
 });
