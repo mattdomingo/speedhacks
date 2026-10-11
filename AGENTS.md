@@ -137,6 +137,7 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Decision:** Exercise camera uploads and `find_object` through the existing MCP smoke client, using a reserved test identity configured in both the backend and client. Keep the bearer token and inbound caller checks; no provisioned phone number or Dial account is required for this test.
 - **Reason and consequences:** Camera and memory integration can be checked before voice integration is ready. This proves neither a real call nor physical recognition accuracy; those retain their separate acceptance checks. Use live mode to exclude synthetic object evidence.
 - **Sources / validation:** [MCP-only testing and production checks](https://github.com/mattdomingo/speedhacks/pull/3), [smoke instructions](docs/object-memory.md#mcp-smoke-test), [dated validation](docs/object-memory-validation.md).
+- **Later production use:** [DEC-019](#dec-019--connect-steph-to-production-camera-memory) enables real calls. Keep the reserved identity confined to isolated MCP-only environments; do not replace an active production caller to run a smoke test.
 
 ### DEC-010 — Google digital memory: synced copy with in-request live fallback
 
@@ -200,6 +201,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Decision:** Require a separate `clear|partially_occluded|unclear` visibility assessment from the vision model. Only two consecutive clear detections may update an automatic memory. Missing visibility on legacy candidates fails closed. Preserve the previous record, time, and photograph through partial views and require two new clear views for recovery. Public MCP and manual-observation contracts remain unchanged.
 - **Reason and consequences:** In the real cap-over-phone test, identity and overlapping boxes stayed stable while the model marked the detection certain and invented an incorrect support relationship. Identity confidence is insufficient evidence of visibility. Two direct calls with the new schema on a real covered-phone image marked it partially occluded even with `uncertain:false`. This remains a model-based check; it is not proof against every occlusion or noisy scene. No new service, dependency, database migration, or image archive is introduced.
 - **Sources / validation:** `backend/physical/vision.mjs`, `backend/physical/confirm.mjs`, and focused SQLite/Postgres regression coverage; [dated validation](docs/object-memory-validation.md).
+
+### DEC-019 — Connect Steph to production camera memory
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 1 with Engineer 3; the project owner requested real phone testing.
+- **Decision:** Reuse Steph's existing Dial line and connect its Context MCP to the production `/mcp` endpoint. Replace the previous development MCP connection, since Dial requires unique tool names across connections. Configure the consented caller, existing memory PIN, provider credentials, and time zone through ignored local configuration and Vercel environment variables. Keep per-call caller headers supplied by Dial.
+- **Reason and consequences:** The existing `find_object` contract already serves camera evidence. No new voice service, database schema, or public image endpoint is needed. Preserve the agent's current persona and other capabilities when adding camera time-zone and freshness instructions. A connected MCP, authenticated smoke test, or signed webhook ping does not prove a real voice call; Gemini failures preserve historical sightings and must not be described as fresh observations.
+- **Sources / validation:** [Real phone procedure](docs/object-memory.md#test-with-stephs-phone-line), [dated readiness checks](docs/object-memory-validation.md#steph-phone-connection-readiness), `backend/voice/instructions.txt`. Caller numbers, PINs, and credentials are deliberately excluded from this record.
 
 ### DEC-020 — Confirm SMS delivery and never resend ambiguous attempts
 
