@@ -262,6 +262,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** The phone and the app gave different answers ("beside the blue mug" vs. "kitchen counter"). Inserts never overwrite an existing id, so stale demo text survived re-seeding. Demo records stay labelled `demo:true`.
 - **Sources / validation:** `backend/demo.mjs`, `backend/test/patients.test.mjs`; checked live through MCP on 2026-10-11.
 
+### DEC-026 — Recent email and date-range recall through existing memory tools
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineers 1 and 2; requested by the project owner in the email-recall task.
+- **Decision:** Make `search_messages.query` optional. Omission or a generic recent-mail query retrieves up to five recent messages using the existing read-only Google adapter. Add inclusive date/end_date ranges (at most 31 days) to calendar and email tools, interpreted in the user's time zone. Recent/dated email and range-calendar requests perform bounded live lookups when connected, report failure instead of stale/partial/empty success, and retain generation/scope fencing, caller/PIN checks, configured mail limits and live-mode demo exclusion. Undated keyword searches and single-day calendar requests retain their current behavior. Historical calendar reads do not replace the synced window.
+- **Reason and consequences:** A caller who forgot the subject cannot supply search keywords, and last week's plans may be outside the synced calendar window. Steph offers recent mail and date-based recall, without inferring attendance or what someone forgot/completed. Tool descriptions provide current local relative-date boundaries. No new service, scope, storage schema or dependency is needed. The deployed Dial instruction and cached tool schema must be refreshed separately; local tool tests do not prove voice behavior.
+- **Sources / validation:** `contracts/index.mjs`, `backend/digital/index.mjs`, `backend/voice/`, `backend/test/google.test.mjs`; acceptance steps in the README Google connection section.
+
 Copy this template for the next decision:
 
 ```markdown

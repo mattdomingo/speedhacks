@@ -101,6 +101,7 @@ test('MCP discovery works without caller headers but cannot retrieve data', asyn
   const client = await connect(t, url);
   assert.equal((await client.listTools()).tools.length, 5);
   assert.equal((await client.callTool({ name: 'find_object', arguments: { object: 'keys' } })).isError, true);
+  assert.equal((await client.callTool({ name: 'search_messages', arguments: {} })).isError, true);
 });
 
 test('MCP requires its own secret and negotiates legacy initialization', async t => {
@@ -170,6 +171,7 @@ test('unknown caller and outbound direction cannot access memories', async t => 
   ]) {
     const client = await connect(t, url, headers);
     assert.equal((await client.callTool({ name: 'find_object', arguments: { object: 'keys' } })).isError, true);
+    assert.equal((await client.callTool({ name: 'search_messages', arguments: {} })).isError, true);
   }
 });
 
