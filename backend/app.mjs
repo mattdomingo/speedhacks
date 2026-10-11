@@ -2,9 +2,11 @@ import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { frameSchema, observationSchema } from '../contracts/index.mjs';
 import { handleMcp } from './voice/mcp.mjs';
-import { describeHeaders, dialWebhook } from './voice/webhooks.mjs';
+import { createPhysicalMemory } from './physical/pipeline.mjs';
+import { frameId } from './physical/state.mjs';
 import { createGoogle } from './digital/google.mjs';
 import { cronRoutes, googleRoutes } from './digital/routes.mjs';
+import { describeHeaders, dialWebhook } from './voice/webhooks.mjs';
 import { createAnalytics } from './analytics/index.mjs';
 
 function bearer(token) {
@@ -27,31 +29,35 @@ function validateTimestamp(timestamp) {
   }
 }
 
-export function createApp(config, store, google = createGoogle({ config, store }), analytics = createAnalytics({})) {
+export function createApp(config, store, physicalOptions, {
+  google = createGoogle({ config, store }), analytics = createAnalytics({}),
+} = {}) {
   const app = express();
+  const physical = createPhysicalMemory(config, store, physicalOptions);
   app.disable('x-powered-by');
-  app.get('/health', async (_req, res) => {
-    const db = await store.ping().catch(() => false);
-    res.status(db ? 200 : 503).json({ ok: db, demo: config.DEMO_MODE === 'true' });
-  });
+  app.get('/health', (_req, res) => res.json({ ok: true, demo: config.DEMO_MODE === 'true' }));
   // Signed by Dial over the raw body, so it is mounted before the JSON parser.
   app.post('/webhooks/dial', dialWebhook(config, store, analytics));
   app.use('/mcp', bearer(config.DIAL_MCP_TOKEN));
   app.use('/camera', bearer(config.CAMERA_TOKEN));
+  app.use('/camera', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use(express.json({ limit: '1mb' }));
   app.use('/google', googleRoutes(google, bearer(config.ADMIN_TOKEN)));
   app.use('/cron', cronRoutes(google, bearer(config.CRON_SECRET), { store, retentionDays: config.DIAL_EVENT_RETENTION_DAYS }));
 
   app.all('/mcp', async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();
-    // shortcut: caller ID is only a demo allowlist, add verified identity before real personal data.
     if (config.DIAL_LOG_HEADERS === 'true') console.log(`MCP headers: ${describeHeaders(req.headers)}`);
+    // shortcut: caller ID is only a demo allowlist; CALLER_PIN adds a second factor. Add verified
+    // identity and user-scoped storage before multiple users' personal data.
     const number = req.get(config.DIAL_CALLER_HEADER ?? 'x-dial-user-number');
     const direction = req.get(config.DIAL_DIRECTION_HEADER ?? 'x-dial-direction');
     const reason = !config.DEMO_CALLER_NUMBER ? 'no_demo_caller' : !number ? 'no_caller_header'
       : number !== config.DEMO_CALLER_NUMBER ? 'unknown_caller' : direction !== 'inbound' ? 'not_inbound' : undefined;
-    await handleMcp(req, res, { store, google, analytics, timeZone: await google.timeZone(), callerPin: config.CALLER_PIN },
-      { authorized: !reason, reason, number: reason ? undefined : number });
+    await handleMcp(req, res, store, { authorized: !reason, reason, number: reason ? undefined : number }, {
+      includeDemo: config.DEMO_MODE === 'true', cameraStatus: () => physical.status(),
+      google, analytics, timeZone: await google.timeZone(), callerPin: config.CALLER_PIN,
+    });
   });
 
   app.post('/camera/observations', async (req, res) => {
@@ -67,8 +73,19 @@ export function createApp(config, store, google = createGoogle({ config, store }
       jpeg.at(-2) !== 0xff || jpeg.at(-1) !== 0xd9) {
       return res.status(400).json({ error: 'Expected JPEG, at most 500 KB' });
     }
-    await store.saveFrame(frame.timestamp, jpeg);
-    res.status(201).json({ status: 'stored', inference: 'not_configured', timestamp: frame.timestamp });
+    const stored = await store.saveFrame(frame.timestamp, jpeg);
+    // Await inference inside the request; Vercel may suspend work after a response.
+    const result = stored ? await physical.processLatest()
+      : { inference: config.GEMINI_API_KEY ? 'ignored' : 'not_configured' };
+    res.status(201).json({ status: stored ? 'stored' : 'ignored', timestamp: frame.timestamp,
+      frameId: frameId({ timestamp: frame.timestamp, jpeg }), ...result });
+  });
+  app.get('/camera/status', async (_req, res) => res.json(await physical.status()));
+  app.get('/camera/evidence/:frameId', async (req, res) => {
+    if (!/^[a-f0-9]{64}$/.test(req.params.frameId)) return res.status(404).json({ error: 'No retained evidence frame' });
+    const frame = await store.cameraSnapshot(req.params.frameId);
+    if (!frame) return res.status(404).json({ error: 'No retained evidence frame' });
+    res.set('X-Captured-At', frame.timestamp).type('jpeg').send(Buffer.from(frame.jpeg));
   });
   app.get('/camera/frame', async (req, res) => {
     const frame = await store.latestFrame();

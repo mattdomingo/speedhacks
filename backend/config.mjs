@@ -3,21 +3,25 @@ import { isTimeZone } from './time.mjs';
 
 const secret = z.string().min(32);
 const optional = schema => z.preprocess(value => value === '' ? undefined : value, schema.optional());
+const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 const GOOGLE_KEYS = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIRECT_URI', 'GOOGLE_TOKEN_KEY', 'ADMIN_TOKEN'];
 
 export function readConfig(env = process.env) {
   const config = z.object({
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-    // Postgres (Neon via the Vercel Marketplace sets DATABASE_URL; older Vercel Postgres sets POSTGRES_URL).
-    DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'Expected a postgres:// connection string'),
-    // Vercel Cron sends `Authorization: Bearer $CRON_SECRET` to /cron/google-sync.
-    CRON_SECRET: optional(secret),
-    DIAL_MCP_TOKEN: secret,
-    CAMERA_TOKEN: secret,
+    DATA_DIR: z.string().min(1).default('./data'),
+    DATABASE_URL: z.string().url().regex(/^postgres(?:ql)?:\/\//).optional(),
+    DIAL_MCP_TOKEN: z.string().min(32),
+    CAMERA_TOKEN: z.string().min(32),
+    GEMINI_API_KEY: z.string().trim().default(''),
+    VISION_MODEL: z.string().trim().min(1).default('gemini-3.8-flash'),
     DEMO_CALLER_NUMBER: z.string().regex(/^\+[1-9]\d{7,14}$/).or(z.literal('')).default(''),
     DEMO_MODE: z.enum(['true', 'false']).default('false'),
+    VERCEL: z.string().optional(),
     // Second factor for callers: caller ID alone is spoofable. Set before connecting real Google data.
     CALLER_PIN: optional(z.string().regex(/^\d{4,8}$/, 'Expected 4 to 8 digits')),
+    // IANA zone for "today" and calendar dates; defaults to the Google calendar's zone, then UTC.
+    TIMEZONE: optional(z.string().refine(isTimeZone, 'Unknown IANA time zone')),
     // Dial Context MCP caller headers; names are configurable until confirmed on a live call.
     DIAL_CALLER_HEADER: z.string().regex(/^[A-Za-z0-9-]+$/).default('x-dial-user-number'),
     DIAL_DIRECTION_HEADER: z.string().regex(/^[A-Za-z0-9-]+$/).default('x-dial-direction'),
@@ -25,9 +29,9 @@ export function readConfig(env = process.env) {
     DIAL_LOG_HEADERS: z.enum(['true', 'false']).default('false'),
     DIAL_WEBHOOK_SECRET: optional(z.string().min(16)),
     DIAL_EVENT_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
-    // IANA zone for "today" and calendar dates; defaults to the Google calendar's zone, then UTC.
-    TIMEZONE: optional(z.string().refine(isTimeZone, 'Unknown IANA time zone')),
+    // Protects /google/* admin routes; Vercel Cron sends CRON_SECRET to /cron/google-sync.
     ADMIN_TOKEN: optional(secret),
+    CRON_SECRET: optional(secret),
     GOOGLE_CLIENT_ID: optional(z.string().min(1)),
     GOOGLE_CLIENT_SECRET: optional(z.string().min(1)),
     GOOGLE_REDIRECT_URI: optional(z.url({ protocol: /^https?$/ })),
@@ -42,9 +46,12 @@ export function readConfig(env = process.env) {
     // Optional Keewano product analytics; unset disables it entirely.
     KEEWANO_API_KEY: optional(z.string().min(1)),
     KEEWANO_ENDPOINT: optional(z.url({ protocol: /^https$/ })),
-    // Unset (and always on Vercel) keeps unsent analytics batches in memory.
+    // Only on a server with a persistent disk; unset keeps unsent batches in memory.
     KEEWANO_DATA_DIR: optional(z.string().min(1)),
-  }).parse({ ...env, DATABASE_URL: env.DATABASE_URL || env.POSTGRES_URL });
+  }).parse({ ...env, DATABASE_URL: env.DATABASE_URL || undefined });
+  if (env.VERCEL === '1' && !config.DATABASE_URL) {
+    throw new Error('Set DATABASE_URL on Vercel; local SQLite is not durable there');
+  }
   const secrets = [config.DIAL_MCP_TOKEN, config.CAMERA_TOKEN, config.ADMIN_TOKEN, config.DIAL_WEBHOOK_SECRET, config.CRON_SECRET].filter(Boolean);
   if (new Set(secrets).size !== secrets.length) {
     throw new Error('Use separate Dial, camera, admin, webhook and cron secrets');
@@ -56,7 +63,7 @@ export function readConfig(env = process.env) {
   }
   if (config.GOOGLE_REDIRECT_URI) {
     const { protocol, hostname, pathname } = new URL(config.GOOGLE_REDIRECT_URI);
-    if (protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(hostname)) {
+    if (protocol !== 'https:' && !LOCAL_HOSTS.includes(hostname)) {
       throw new Error('GOOGLE_REDIRECT_URI must use HTTPS outside localhost');
     }
     if (pathname !== '/google/callback') throw new Error('GOOGLE_REDIRECT_URI must end in /google/callback');

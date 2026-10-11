@@ -8,8 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
-import { createStore, migrate, SCHEMA_VERSION } from '../store.mjs';
-import { testDatabase, testStore, TEST_DATABASE_URL } from './helpers.mjs';
+import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
 import { createGoogle, SCOPES } from '../digital/google.mjs';
 import { addDays, localDate, startOfDay } from '../time.mjs';
 
@@ -88,7 +87,7 @@ async function fixture(t, overrides = {}) {
   const store = await testStore(t);
   const remote = fakeGoogle();
   const google = createGoogle({ config: { ...config, ...overrides }, store, fetch: remote.fetch, log: quietLog });
-  const server = createApp({ ...config, ...overrides }, store, google).listen(0, '127.0.0.1');
+  const server = createApp({ ...config, ...overrides }, store, undefined, { google }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     server.closeAllConnections();
@@ -153,26 +152,18 @@ test('Google configuration is all-or-nothing and redirect URIs are safe', () => 
   assert.throws(() => readConfig({ ...base, TIMEZONE: 'Mars/Olympus' }));
 });
 
-test('migrations are concurrent-safe, idempotent, and refuse a newer schema', async t => {
-  const db = await testDatabase(t);
-  await Promise.all([migrate(db), migrate(db), createStore(db).ready()]);
-  const { rows } = await db.query('SELECT version FROM schema_migrations ORDER BY version');
-  assert.deepEqual(rows.map(row => row.version), Array.from({ length: SCHEMA_VERSION }, (_, i) => i + 1));
-  const store = createStore(db);
-  await store.put({ id: 'kept', source: 'camera', object: 'keys', location: 'desk', timestamp: '2026-01-01T00:00:00Z' });
-  await migrate(db);
-  assert.equal((await store.list('camera'))[0].location, 'desk');
-  await db.query('INSERT INTO schema_migrations (version) VALUES ($1)', [SCHEMA_VERSION + 1]);
-  await assert.rejects(createStore(db).ready(), /newer than this build/);
-});
-
-test('a database that is still waking up is retried on the next request', async t => {
-  const db = await testDatabase(t);
-  let failures = 1;
-  const flaky = { ...db, transaction: work => failures-- > 0 ? Promise.reject(new Error('connection refused')) : db.transaction(work) };
-  const store = createStore(flaky);
-  await assert.rejects(store.ping(), /connection refused/);
-  assert.equal(await store.ping(), true);
+test('Google tables initialize idempotently and keep the connection across reopening', async t => {
+  const store = await testStore(t);
+  await store.put({ id: 'kept', source: 'camera', object: 'keys', location: 'desk', timestamp: '2026-01-01T00:00:00Z', text: 'x' });
+  const remote = fakeGoogle();
+  const google = createGoogle({ config, store, fetch: remote.fetch, log: quietLog });
+  await store.saveGoogleConnection({ scope: SCOPES.calendar, refreshToken: 'sealed', email: 'me@example.com' });
+  const reopened = store.reopen();
+  t.after(() => reopened.close());
+  assert.equal((await reopened.googleConnection()).email, 'me@example.com');
+  assert.equal((await reopened.list('camera'))[0].location, 'desk');
+  assert.deepEqual(await reopened.countByOrigin(), { local: 1 });
+  assert.equal(await google.can('calendar'), true);
 });
 
 test('Google routes require the admin secret and report when unconfigured', async t => {
@@ -375,19 +366,23 @@ test('a live single-day lookup drops events cancelled upstream', async t => {
   assert.equal((await store.list('calendar')).length, 0);
 });
 
-test('stale data triggers one background refresh per interval across instances', async t => {
+test('a stale mail copy asks Gmail first, within the request', async t => {
   const { url, google, remote, store } = await fixture(t);
   await connectGoogle(url, store, remote);
-  const scheduled = [];
-  assert.equal(await google.refreshIfStale(promise => scheduled.push(promise)), false, 'a sync just ran');
-  await store.db.query("UPDATE sync_state SET last_attempt = now() - interval '1 hour' WHERE name = 'google-refresh'");
-  const other = createGoogle({ config, store, fetch: remote.fetch, log: quietLog });
-  const claims = await Promise.all([google.refreshIfStale(p => scheduled.push(p)), other.refreshIfStale(p => scheduled.push(p))]);
-  assert.deepEqual(claims.sort(), [false, true]);
-  assert.equal(scheduled.length, 1);
-  const before = remote.calls.filter(call => call.endsWith('/events')).length;
-  await scheduled[0];
-  assert.equal(remote.calls.filter(call => call.endsWith('/events')).length, before + 1);
+  remote.messages = [{ id: 'old', internalDate: String(Date.now() - 86_400_000), snippet: 'Dinner at six',
+    body: 'dinner six', payload: { headers: [{ name: 'From', value: 'Sarah <s@example.com>' }] } }];
+  await google.syncAll();
+  remote.messages.push({ id: 'new', internalDate: String(Date.now()), snippet: 'Dinner moved to seven',
+    body: 'dinner seven', payload: { headers: [{ name: 'From', value: 'Sarah <s@example.com>' }] } });
+  const client = await mcp(t, url);
+  const search = async () => (await client.callTool({ name: 'search_messages', arguments: { query: 'dinner' } })).structuredContent;
+  assert.deepEqual((await search()).evidence.map(item => item.id), ['gmail:old'], 'a fresh copy answers locally');
+  const age = store.adapter === 'sqlite'
+    ? ["UPDATE sync_state SET last_success = ? WHERE name = 'google-gmail'", [new Date(Date.now() - 3_600_000).toISOString()]]
+    : ["UPDATE sync_state SET last_success = now() - interval '1 hour' WHERE name = 'google-gmail'", []];
+  await store.sql(...age);
+  assert.equal(await google.mailFresh(), false);
+  assert.ok((await search()).evidence.some(item => item.id === 'gmail:new'), 'a stale copy asks Gmail');
 });
 
 test('consent with only calendar access keeps Gmail tools on local evidence', async t => {
@@ -406,7 +401,7 @@ test('setup appends only missing secrets to an existing .env', () => {
     writeFileSync(join(dir, '.env'), 'DIAL_MCP_TOKEN=keep\nCAMERA_TOKEN=keep2');
     execFileSync(process.execPath, [join(import.meta.dirname, '../../scripts/setup.mjs')], { cwd: dir });
     const env = readFileSync(join(dir, '.env'), 'utf8');
-    assert.match(env, /^DIAL_MCP_TOKEN=keep\nCAMERA_TOKEN=keep2\nDATABASE_URL=postgres:\/\/\S+\nADMIN_TOKEN=[0-9a-f]{64}\nGOOGLE_TOKEN_KEY=[0-9a-f]{64}\nCRON_SECRET=[0-9a-f]{64}\n$/);
+    assert.match(env, /^DIAL_MCP_TOKEN=keep\nCAMERA_TOKEN=keep2\nADMIN_TOKEN=[0-9a-f]{64}\nGOOGLE_TOKEN_KEY=[0-9a-f]{64}\nCRON_SECRET=[0-9a-f]{64}\n$/);
     execFileSync(process.execPath, [join(import.meta.dirname, '../../scripts/setup.mjs')], { cwd: dir });
     assert.equal(readFileSync(join(dir, '.env'), 'utf8'), env);
   } finally {

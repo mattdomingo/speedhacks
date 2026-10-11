@@ -143,6 +143,12 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
   // Per-instance cache only; serverless instances each refresh their own access token.
   let accessToken;
 
+  // On Vercel the daily cron is the only scheduled sync, so freshness decides when a call
+  // asks Google live instead (inside the request; nothing runs after the response).
+  function fresh(state) {
+    return Boolean(state && state.age_seconds !== null && state.age_seconds < Math.max(syncMinutes, 15) * 2 * 60);
+  }
+
   async function connection() {
     const row = configured ? await store.googleConnection() : undefined;
     return row && { ...row, scopes: row.scope.split(' ') };
@@ -259,7 +265,7 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
       return { name, ok: true, count };
     } catch (error) {
       log.error(`Google sync ${name} failed: ${error.message}`);
-      await store.recordSync(name, { error: error.message }).catch(() => {});
+      try { await store.recordSync(name, { error: error.message }); } catch { /* reported above */ }
       return { name, ok: false, error: error.message };
     }
   }
@@ -372,8 +378,6 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
     },
 
     async syncAll() {
-      // Any full sync renews the refresh lease, so callers do not trigger a redundant one.
-      await store.claimSync('google-refresh', 0);
       const results = [];
       if (await can('calendar')) results.push(await google.syncCalendar());
       if (await can('gmail')) results.push(await google.syncEmail());
@@ -384,18 +388,13 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
     // True when a recent successful sync covered this date, so the database is authoritative.
     async covers(date) {
       const [state] = await store.syncState('google-calendar');
-      const maxAge = Math.max(syncMinutes, 15) * 2 * 60;
-      return Boolean(state?.window_from && state.age_seconds !== null && state.age_seconds < maxAge &&
-        state.window_from <= date && date <= state.window_to);
+      return Boolean(state?.window_from && fresh(state) && state.window_from <= date && date <= state.window_to);
     },
 
-    // Serverless has no timer: a call that finds the copy stale starts a sync for the next
-    // caller. The database lease lets only one instance per interval do it.
-    async refreshIfStale(schedule = promise => promise) {
-      if (!configured || !(await can('calendar') || await can('gmail'))) return false;
-      if (!(await store.claimSync('google-refresh', Math.max(syncMinutes, 1) * 60))) return false;
-      schedule(google.syncAll().catch(error => log.error(`Background Google sync failed: ${error.message}`)));
-      return true;
+    // Whether the stored mail copy is recent enough to answer without asking Gmail first.
+    async mailFresh() {
+      const [state] = await store.syncState('google-gmail');
+      return fresh(state);
     },
 
     // Live lookups run during a phone call, so they share one short deadline.
@@ -415,9 +414,10 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
       return records;
     },
 
-    // Long-running servers (npm start, Docker) sync on a timer; Vercel uses cron + refreshIfStale.
+    // Long-running servers (npm start, Docker) sync on a timer. On Vercel, process timers are
+    // not durable (DEC-004): Vercel Cron, the post-connect sync and live lookups cover it.
     start() {
-      if (!configured || !syncMinutes) return () => {};
+      if (!configured || !syncMinutes || config.VERCEL === '1') return () => {};
       let running = false;
       const tick = async () => {
         if (running) return;

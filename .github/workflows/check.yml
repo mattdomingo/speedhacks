@@ -1,11 +1,22 @@
 name: Scaffold checks
-on:
-  push:
-    branches: [main]
-  pull_request:
+on: [push, pull_request]
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: speedhacks_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d speedhacks_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,45 +27,9 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
-      - name: Tests (in-process PGlite)
-        run: npm test
+      - run: npm test
       - run: npm run keewano:codegen -- --check
+      - run: npm test
+        env:
+          TEST_DATABASE_URL: postgres://test:test@127.0.0.1:5432/speedhacks_test
       - run: python -m unittest discover -s camera -p 'test_*.py'
-  postgres:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.15.0
-          cache: npm
-      - run: npm ci
-      - name: Tests (real Postgres through node-postgres)
-        run: npm test
-        env:
-          TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
-  container:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Boot the compose stack and probe health across a restart
-        run: |
-          node scripts/setup.mjs
-          docker compose up -d --build --wait
-          curl -fsS http://127.0.0.1:3000/health | grep -q '"ok":true'
-          docker compose restart backend
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3000/health && break; sleep 1; done
-          curl -fsS http://127.0.0.1:3000/health | grep -q '"ok":true'
-          docker compose exec -T postgres psql -U speedhacks -d speedhacks -Atc 'SELECT MAX(version) FROM schema_migrations'
-      - if: failure()
-        run: docker compose logs

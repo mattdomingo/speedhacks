@@ -1,0 +1,7 @@
+.env
+.env.*
+.git
+.venv
+data
+camera
+backend/test

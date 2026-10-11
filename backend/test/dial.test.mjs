@@ -25,7 +25,7 @@ async function fixture(t, overrides = {}) {
   const events = [];
   const rejected = [];
   const analytics = { toolCall() {}, rejected: event => rejected.push(event), sync() {}, dialEvent: type => events.push(type) };
-  const server = createApp({ ...config, ...overrides }, store, undefined, analytics).listen(0, '127.0.0.1');
+  const server = createApp({ ...config, ...overrides }, store, undefined, { analytics }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     server.closeAllConnections();
@@ -109,7 +109,7 @@ test('with CALLER_PIN set, spoofed caller ID alone retrieves nothing and guessin
 
 test('behind Vercel request helpers, signed webhooks and JSON routes still work', async t => {
   const { store } = await fixture(t);
-  const app = createApp(config, store, undefined, { toolCall() {}, rejected() {}, sync() {}, dialEvent() {} });
+  const app = createApp(config, store, undefined, { analytics: { toolCall() {}, rejected() {}, sync() {}, dialEvent() {} } });
   const server = createServer(vercelHelpers(app)).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });

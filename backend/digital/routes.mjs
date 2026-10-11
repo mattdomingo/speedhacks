@@ -1,6 +1,5 @@
 import express from 'express';
 import { z } from 'zod';
-import { background } from '../background.mjs';
 
 const callbackQuery = z.object({
   code: z.string().min(1).max(2048).optional(),
@@ -28,8 +27,10 @@ export function googleRoutes(google, adminAuth) {
     }
     try {
       await google.completeConnect(query.data.code, query.data.state);
-      background(google.syncAll(), 'Initial Google sync');
-      page(res, 200, 'Google account connected. You can close this tab.');
+      // Sync before responding: work after the response is not durable on Vercel (DEC-004).
+      const synced = (await google.syncAll()).every(result => result.ok);
+      page(res, 200, synced ? 'Google account connected and synced. You can close this tab.'
+        : 'Google account connected; the first sync failed and will be retried. You can close this tab.');
     } catch (error) {
       console.error(`Google connection failed: ${error.message}`);
       page(res, error.status === 400 ? 400 : 502, 'Google connection failed. Start again from the connect command.');

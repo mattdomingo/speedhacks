@@ -1,45 +1,43 @@
-import { randomBytes } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import pg from 'pg';
-import { PGlite } from '@electric-sql/pglite';
-import { pglite, postgres } from '../db.mjs';
-import { createStore } from '../store.mjs';
+import { Client } from 'pg';
+import { openStore } from '../store.mjs';
+import { openPostgresStore } from '../postgres.mjs';
 
-let shared;
-
-// An isolated, empty database per test: in-process PGlite by default, or a throwaway schema
-// on a real server when TEST_DATABASE_URL is set (CI runs both).
-export async function testDatabase(t) {
-  const url = process.env.TEST_DATABASE_URL;
-  const schema = `test_${randomBytes(6).toString('hex')}`;
-  if (!url) {
-    // Starting PGlite (WASM) is the slow part, so one instance serves a whole test file;
-    // tests in a file run sequentially, each in its own schema.
-    shared ??= new PGlite();
-    await shared.exec(`CREATE SCHEMA ${schema}; SET search_path TO ${schema}`);
-    const db = { ...pglite(shared), close: async () => {} };
-    t.after(() => shared.exec(`SET search_path TO public; DROP SCHEMA ${schema} CASCADE`));
-    return db;
-  }
-  const admin = async sql => {
-    const client = new pg.Client({ connectionString: url });
-    await client.connect();
-    try { await client.query(sql); } finally { await client.end(); }
-  };
-  await admin(`CREATE SCHEMA ${schema}`);
-  const db = postgres(url, { options: `-c search_path=${schema}` });
-  t.after(async () => {
-    await db.close().catch(() => {});
-    await admin(`DROP SCHEMA ${schema} CASCADE`);
-  });
-  return db;
-}
-
+// A fresh store per test on the same adapter the backend would use: SQLite by default, or a
+// throwaway schema initialized from schema.sql when TEST_DATABASE_URL is set (CI runs both).
+// `sql` runs a statement against that database for tests that need to age or inspect rows.
 export async function testStore(t) {
-  const db = await testDatabase(t);
-  const store = createStore(db);
-  await store.ready();
-  return Object.assign(store, { db });
+  if (!process.env.TEST_DATABASE_URL) {
+    const dir = mkdtempSync(join(tmpdir(), 'speedhacks-'));
+    const store = openStore(dir);
+    t.after(async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); });
+    return Object.assign(store, {
+      adapter: 'sqlite', reopen: () => openStore(dir),
+      sql: async (text, params = []) => store.db.prepare(text).run(...params),
+    });
+  }
+  const admin = new Client({ connectionString: process.env.TEST_DATABASE_URL, connectionTimeoutMillis: 10_000 });
+  await admin.connect();
+  const schema = `test_${randomUUID().replaceAll('-', '')}`;
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  await admin.query(`SET search_path TO ${schema}`);
+  await admin.query(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+  const url = new URL(process.env.TEST_DATABASE_URL);
+  url.searchParams.set('options', `-c search_path=${schema}`);
+  const store = openPostgresStore(url.toString());
+  t.after(async () => {
+    await store.close();
+    await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await admin.end();
+  });
+  return Object.assign(store, {
+    adapter: 'postgres', reopen: () => openPostgresStore(url.toString()),
+    sql: (text, params = []) => admin.query(text, params),
+  });
 }
 
 export const TEST_DATABASE_URL = 'postgres://test:test@127.0.0.1:5432/test';

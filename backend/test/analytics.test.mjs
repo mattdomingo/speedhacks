@@ -60,7 +60,7 @@ test('MCP tool calls report counts, latency and provenance but no personal conte
   await seedDemo(store);
   const sdk = fakeSdk();
   const analytics = createAnalytics(config, { sdk });
-  const server = createApp(config, store, undefined, analytics).listen(0, '127.0.0.1');
+  const server = createApp(config, store, undefined, { analytics }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     server.closeAllConnections();

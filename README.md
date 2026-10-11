@@ -1,70 +1,64 @@
-# speedhacks
+# Recall
 
 Phone memory assistant hackathon scaffold. A person calls a number, asks about a plan or misplaced object, and hears an answer grounded in timestamped evidence.
 
-**Status:** The backend runs on Vercel with Postgres (Neon). Google Calendar and Gmail connect through OAuth and sync into Postgres (see [Google connection](#google-connection)). Demo mode still seeds labeled synthetic memories. Dial calls and object detection are not connected; webcam uploads do not identify objects.
+Engineers and coding agents: start with [AGENTS.md](AGENTS.md) for shared working rules, ownership, verification, and the [decision log](AGENTS.md#decision-log).
 
-## Proposed architecture
+Production API: **https://recall-kappa-nine.vercel.app**. Check [health](https://recall-kappa-nine.vercel.app/health); connect Dial to `https://recall-kappa-nine.vercel.app/mcp`. This is an API backend; `/` returns 404.
+
+The camera observer recognizes keys, a phone, and a wallet on a fixed tabletop and remembers their last confirmed locations. Configure a paid Gemini project on the backend to enable recognition. Without a key, uploads still work and report `not_configured`. Google Calendar and Gmail connect through OAuth and sync into the same database (see [Google connection](#google-connection)); real Dial calls remain a separate integration.
+
+## Architecture
 
 ```mermaid
 flowchart LR
     Caller[Person calling] <--> Dial[Dial managed voice agent]
-    Dial <-->|Context MCP: authenticated tools| Backend[Backend: Vercel function]
-    Backend <-->|Digital module: OAuth, cron + on-demand sync, live fallback| Google[Calendar and email]
-    Backend <-->|Read and write evidence| Store[(Postgres: Neon via Vercel)]
-    Cron[Vercel Cron] -.->|Daily sync| Backend
+    Dial <-->|Context MCP: authenticated tools| Backend[Hosted backend]
+    Backend <-->|Digital module: OAuth, cron sync, live fallback| Google[Calendar and email]
+    Backend <-->|Read and write evidence| Store[(Managed Postgres on Vercel)]
+    Cron[Vercel Cron] -.->|Daily Google sync| Backend
     Dial -.->|Signed webhooks: call events| Backend
     Backend -.->|Optional: pseudonymous tool analytics| Keewano[Keewano]
     Camera[Laptop webcam process] -->|HTTPS: authenticated frames| Backend
-    Vision[Planned vision extraction] -.->|Timestamped observations| Backend
+    Backend <-->|Stateless snapshot analysis| Vision[Gemini vision]
 ```
 
-One monorepo, two running processes: a Node backend (a single Vercel function in production, or `npm start` / Docker anywhere else) and a Python webcam process on a laptop. Digital and physical memory are separate backend modules. They can be deployed independently later; the hackathon uses one backend deployment.
+One monorepo, two running processes: a hosted Node/Express backend and a Python webcam process on a laptop. Digital and physical memory are modules within the same backend. Vercel's `services` configuration contains one hosted service, `recall`; `camera/` is a hardware capture client, not a deployable HTTP service. Local development and Docker Compose use SQLite unless `DATABASE_URL` is set.
 
 Dial owns speech recognition, conversation, and speech playback. Its managed voice agent calls the backend's MCP tools during the call. The camera collects evidence before a call; object lookup retrieves historical observations rather than describing only the current room.
 
-The camera makes outbound HTTPS requests, requiring no public laptop port. The backend keeps only the latest raw frame, while object observations persist separately. Engineer 3 adds vision extraction and posts observations before camera capture can produce searchable memories. Photos and live-message adapters are stretch work.
+The camera makes outbound HTTPS requests, requiring no public laptop port. The backend retains the latest raw frame plus one confirmed record/photo per category. It requires two matching, certain sightings of a resting object before updating memory. Missing objects preserve the previous location and capture time. See the [object-memory runbook and phone handoff](docs/object-memory.md).
 
 ## Ownership
 
 | Engineer | Owns | Next work |
 | --- | --- | --- |
-| 1: Phone | `backend/voice/`, `backend/app.mjs` | Connect Dial MCP, configure voice instructions, test a real call |
-| 2: Digital memory, database, infra | `backend/digital/`, `backend/store.mjs`, `backend/db.mjs`, `backend/runtime.mjs`, `backend/analytics/`, Vercel and Docker files | Connect a real Google test account; confirm Dial header names on a live call |
-| 3: Physical memory | `camera/`, `backend/physical/` | Add vision extraction, placement observations, and last-seen validation |
+| 1: Phone and deployment | `backend/voice/`, `backend/app.mjs`, database adapters, Vercel and Docker configuration | Maintain hosted infrastructure, connect Dial MCP, and test a real call |
+| 2: Digital memory | `backend/digital/` (Google adapter and its SQLite/Postgres stores), `backend/analytics/` | Connect a real Google test account in each environment; confirm Dial header names on a live call |
+| 3: Physical memory | `camera/`, `backend/physical/` | Validate real tabletop accuracy, latency, and missed placements |
 
-`contracts/index.mjs` defines shared payload validation and tool inputs. Coordinate changes here before changing producers or consumers.
+`contracts/index.mjs` defines shared payload validation and tool inputs. Coordinate changes here before changing producers or consumers. Engineer 1 owns the shared backend deployment.
+
+Store calls may be asynchronous: always `await` reads and writes so both SQLite and Postgres work. Finish required processing and writes before sending an HTTP response. Keep durable state in the database; a process-local cache or a background task after the response is not durable on Vercel. Schema changes belong in `backend/schema.sql` and must be applied to each environment before code depends on them.
 
 ## Local startup
 
-Requires Node 22.15.x–22.x and npm, plus a Postgres database; optional camera capture uses Python 3.12+.
+Requires Node 22.15.x–22.x and npm; optional camera capture uses Python 3.12+. Node's built-in SQLite API is experimental in this version.
 
 ```sh
 npm ci
-npm run setup     # .env with distinct secrets and a local DATABASE_URL
-npm run db:up     # local Postgres 16 in Docker (or point DATABASE_URL at your Neon database)
+npm run setup
 ```
 
-Setup creates an ignored, owner-readable `.env`. It never changes existing values; rerunning it on an older `.env` only appends settings added since (`DATABASE_URL`, `ADMIN_TOKEN`, `GOOGLE_TOKEN_KEY`, `CRON_SECRET`). Set `DEMO_CALLER_NUMBER` there to a consented test caller's E.164 number, then:
+Setup creates an ignored, owner-readable `.env` with distinct secrets. It never changes existing values; on an older `.env` it only appends secrets added since (`ADMIN_TOKEN`, `GOOGLE_TOKEN_KEY`, `CRON_SECRET`). Set `DEMO_CALLER_NUMBER` there to a consented test caller's E.164 number, then:
 
 ```sh
 npm start
 ```
 
-Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch mode: `npm run dev`. The schema migrates on first request; `npm run db:migrate` does it ahead of time.
+Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch mode: `npm run dev`.
 
-`DEMO_MODE=true` seeds synthetic calendar, email, and keys memories dated today in the user's zone. Seeded records have `demo: true`. Setting the flag to false stops seeding but does not erase existing fixtures. The store is single-user.
-
-## Deploying to Vercel
-
-1. Import the repository in Vercel. `server.js` exports the Express app, which Vercel deploys as one function (zero-config Express, Fluid compute); no build settings are needed.
-2. Add Postgres from the Vercel Marketplace (Neon) and connect it to the project. It sets `DATABASE_URL` (older Vercel Postgres projects set `POSTGRES_URL`, which also works). Connections go through a module-scope `pg` pool released by `attachDatabasePool`.
-3. Add the variables from `.env.example` as Vercel environment variables: at least `DIAL_MCP_TOKEN`, `CAMERA_TOKEN`, `DEMO_CALLER_NUMBER`, and for Google `ADMIN_TOKEN`, `GOOGLE_*`, `CRON_SECRET`, `CALLER_PIN`. Generate secrets with `npm run setup` locally and copy them.
-4. Deploy. The first request runs migrations (an advisory lock keeps concurrent cold starts safe) and seeds demo data if enabled. `GET /health` reports database reachability.
-
-`vercel.json` schedules `GET /cron/google-sync` once a day (the Hobby plan's limit; Vercel sends `Authorization: Bearer $CRON_SECRET`). Between cron runs, a tool call that finds the Google copy older than `GOOGLE_SYNC_MINUTES` starts a background sync (`waitUntil`) for the next caller; a database lease lets only one instance do so per interval. On a Pro plan, change the schedule to `*/10 * * * *`. Long-running servers (`npm start`, Docker) sync on a timer instead.
-
-Keewano batches are kept in memory on Vercel and shipped within about two seconds, since serverless instances may suspend; set `KEEWANO_DATA_DIR` only on a server with a persistent disk.
+`DEMO_MODE=true` seeds synthetic calendar, email, and keys memories dated today in the user's zone (`TIMEZONE`, else the Google calendar's, else UTC). Seeded records have `demo: true`. Setting the flag to false stops seeding and excludes synthetic camera records from lookup, including fixtures already in the database. It does not erase records. Live object evidence always takes priority over fixtures. This scaffold has one demo user and no connected Google account.
 
 ## Contracts
 
@@ -72,19 +66,21 @@ Keewano batches are kept in memory on Vercel and shipped within about two second
 | --- | --- | --- |
 | `GET /health` | None | Liveness and demo status |
 | `POST /mcp` | `Bearer DIAL_MCP_TOKEN` | Stateless Streamable HTTP MCP; other methods return 405 |
-| `get_schedule({date})` | Authorized inbound demo caller | Plans for an explicit `YYYY-MM-DD` date |
-| `search_messages({query})` | Authorized inbound demo caller | Search fixture emails |
+| `get_schedule({date})` | Authorized inbound demo caller | Calendar plans for an explicit `YYYY-MM-DD` date |
+| `search_messages({query})` | Authorized inbound demo caller | Search synced Gmail (and fixtures) by keywords |
 | `find_object({object})` | Authorized inbound demo caller | Latest matching observation by capture time |
-| `POST /camera/frame` | `Bearer CAMERA_TOKEN` | Store latest JPEG, at most 500 KB |
+| `POST /camera/frame` | `Bearer CAMERA_TOKEN` | Store latest JPEG, at most 500 KB; return frame ID and actual inference status |
 | `GET /camera/frame` | `Bearer CAMERA_TOKEN` | Retrieve latest JPEG with `X-Captured-At` |
+| `GET /camera/status` | `Bearer CAMERA_TOKEN` | Capture/analysis freshness, processing errors, latency, token usage |
+| `GET /camera/evidence/:frameId` | `Bearer CAMERA_TOKEN` | Retrieve a retained confirming JPEG; no public image URLs |
 | `POST /camera/observations` | `Bearer CAMERA_TOKEN` | Persist a placement observation |
 | `POST /google/connect` | `Bearer ADMIN_TOKEN` | Start Google OAuth; returns a 10-minute consent link |
-| `GET /google/callback` | Single-use OAuth state | Google redirect target; stores the encrypted refresh token |
+| `GET /google/callback` | Single-use OAuth state | Google redirect target; stores the encrypted refresh token, then syncs |
 | `GET /google/status` | `Bearer ADMIN_TOKEN` | Connection, granted scopes, sync results, record counts |
 | `POST /google/sync` | `Bearer ADMIN_TOKEN` | Sync Calendar and Gmail now |
 | `DELETE /google/connection` | `Bearer ADMIN_TOKEN` | Revoke at Google and delete synced Google evidence |
-| `POST /webhooks/dial` | `X-Dial-Signature` HMAC | Store Dial call/message events (deduplicated, pruned after retention) |
 | `GET /cron/google-sync` | `Bearer CRON_SECRET` | Vercel Cron: sync Google and prune expired Dial events |
+| `POST /webhooks/dial` | `X-Dial-Signature` HMAC | Store Dial call/message events (deduplicated, pruned after retention) |
 
 With `CALLER_PIN` set, each memory tool also takes `pin`; without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Five wrong PINs lock that caller number out for 15 minutes.
 
@@ -98,56 +94,40 @@ Observation body:
 }
 ```
 
-Frame bodies contain `timestamp` and `jpegBase64`. The upload response explicitly reports `inference: "not_configured"`.
+Frame bodies still contain `timestamp` and `jpegBase64`. Upload acceptance does not imply recognition: `inference` can be `analyzed`, `busy`, `throttled`, `ignored`, `stale`, `failed`, `superseded`, or `not_configured`. An analyzed frame may confirm zero objects.
 
-Memory tools return `{"status":"supported","evidence":[...]}` or `{"status":"unknown","evidence":[]}`. Each evidence record has an ID, source, text, timestamp, and demo flag; Google records add `origin` (`google-calendar`/`google-gmail`) and `ref` (a link to the original event or thread). Unauthorized/failed tools return errors, not proof that nothing happened: if Google cannot be reached and nothing is stored locally, the tool errors instead of answering "unknown". Calendar plans do not prove attendance; declined, tentative and unanswered invitations say so; email evidence names the sender's address as well as the display name; camera observations are last-seen locations.
+Memory tools return `{"status":"supported","evidence":[...]}` or `{"status":"unknown","evidence":[]}`. Each evidence record has an ID, source, text, timestamp, and demo flag; Google records add `origin` (`google-calendar`/`google-gmail`) and `ref` (a link to the original event or thread). Unauthorized/failed tools return errors, not proof that nothing happened: if Google cannot be reached, or access expired, and nothing is stored, the tool errors instead of answering "unknown". Calendar plans do not prove attendance; declined, tentative and unanswered invitations say so; email evidence names the sender's address beside the display name; camera observations are last-seen locations.
 
 ## Google connection
 
-Read-only scopes: `calendar.readonly` and `gmail.readonly` (Gmail search needs the latter; `gmail.metadata` cannot search). Both are sensitive/restricted, so keep the OAuth consent screen in **Testing** with your account added as a test user. Google expires Testing-mode refresh tokens after 7 days; status then reads `reconnect_required` and you connect again.
+Read-only scopes: `calendar.readonly` and `gmail.readonly` (Gmail search needs the latter; `gmail.metadata` cannot search). Both are sensitive/restricted, so keep the OAuth consent screen in **Testing** with the demo account as a test user. Google expires Testing-mode refresh tokens after 7 days; status then reads `reconnect_required` and you connect again.
 
-1. In Google Cloud Console, enable the Calendar API and Gmail API, configure the consent screen (External, Testing, add test users), and create an OAuth client of type **Web application**. Add the authorized redirect URI `http://localhost:3000/google/callback` for local use, or `https://YOUR_BACKEND/google/callback` when hosted.
-2. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` in `.env` or the Vercel project (`npm run setup` provides `ADMIN_TOKEN` and `GOOGLE_TOKEN_KEY`). A partial Google configuration fails at boot. **Set `CALLER_PIN` too:** caller ID can be spoofed, and the PIN is what keeps a stranger from hearing this mailbox.
-3. `npm start` (or deploy), then `npm run google -- connect` and open the printed link within 10 minutes. Use `BACKEND_URL=https://YOUR_BACKEND` for a hosted backend.
-4. `npm run google -- status` shows the account, scopes, last sync and record counts. `sync` forces a sync; `disconnect` revokes access and deletes synced Google evidence.
+1. In Google Cloud Console, enable the Calendar API and Gmail API, configure the consent screen (External, Testing, add test users), and create an OAuth client of type **Web application**. Authorize `http://localhost:3000/google/callback` for local use and `https://recall-kappa-nine.vercel.app/google/callback` (or the preview origin) when hosted.
+2. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `ADMIN_TOKEN`, `GOOGLE_TOKEN_KEY` and `CRON_SECRET` in `.env` or the Vercel environment (`npm run setup` generates the secrets). A partial Google configuration fails at boot. **Set `CALLER_PIN` too:** caller ID can be spoofed, and the PIN is what keeps a stranger from hearing this mailbox.
+3. On Postgres, run `npm run db:init` against that environment first; it adds the Google, Dial-event and PIN tables without touching existing records. SQLite creates them on open.
+4. `npm start` (or deploy), then `npm run google -- connect` and open the printed link within 10 minutes. Use `BACKEND_URL=https://…` for a hosted backend. The callback page appears after the first sync finishes.
+5. `npm run google -- status` shows the account, scopes, last sync and record counts; `sync` forces a sync; `disconnect` revokes access and deletes synced Google evidence.
 
 How retrieval works during a call:
 
-- A sync replaces the stored copy of calendar events from 7 days ago to 60 days ahead, and of mail matching `GMAIL_SYNC_QUERY` (default: the last 30 days, excluding promotions and social), capped at `GMAIL_SYNC_LIMIT` (at most 250, to stay inside Gmail's per-minute quota). Cancelled or deleted items disappear on the next sync. Syncs run after connecting, from Vercel Cron, on demand when the copy is stale, or on a timer for long-running servers.
-- Tools answer from Postgres. A date outside the synced window (or when the copy is stale), or an email search with no stored match, queries Google live under one `GOOGLE_LIVE_TIMEOUT_MS` deadline (default 1.5 s) so the caller does not hear dead air. Live mail search stays inside `GMAIL_SYNC_QUERY`.
-- If access expires (`reconnect_required`), stored evidence is still served, but a question with nothing stored returns an error rather than "no plans".
-- Dates use `TIMEZONE`, else the Google calendar's zone, else UTC. `get_schedule`'s description tells the voice model today's date in that zone.
-- Email text is the sender's name, subject and Gmail's snippet (at most 300 characters), never full bodies. The refresh token is stored encrypted with AES-256-GCM.
-
-## Database
-
-Postgres: Neon through the Vercel Marketplace in production, `npm run db:up` (Postgres 16 in Docker) locally, and in-process PGlite in tests. `backend/db.mjs` wraps `pg` (pooled, released by `attachDatabasePool` on Vercel) and PGlite behind the same `query`/`transaction` interface; `backend/store.mjs` holds all SQL.
-
-Schema changes are numbered migrations in `backend/store.mjs`, recorded in `schema_migrations` and applied in one transaction under a Postgres advisory lock, so serverless instances that cold-start together cannot race. A database newer than the code refuses to serve. Add a migration to the end of the list; never edit one that has shipped. Evidence is `jsonb` with a `timestamptz` column for ordering; batch writes send all rows in one statement.
-
-| Table | Holds |
-| --- | --- |
-| `evidence` | Memory records, with `origin` (`local`, `google-calendar`, `google-gmail`) |
-| `latest_frame` | The newest webcam frame |
-| `google_connection` | Account, granted scopes, zone, encrypted refresh token, status |
-| `oauth_state` | Single-use OAuth state and PKCE verifier (10-minute expiry) |
-| `sync_state` | Last attempt, success, error, item count and synced window per sync; also the background-refresh lease (`google-refresh`) |
-| `dial_event` | Signed Dial webhook events, pruned after `DIAL_EVENT_RETENTION_DAYS` (on each delivery and each cron run) |
-| `caller_pin_failure` | Wrong-PIN counts per hashed caller number, for the 15-minute lockout |
-
-Backups: Neon keeps point-in-time history and can branch a database; locally use `pg_dump`.
+- A sync replaces the stored copy of calendar events from 7 days ago to 60 days ahead, and of mail matching `GMAIL_SYNC_QUERY` (default: the last 30 days, excluding promotions and social), capped at `GMAIL_SYNC_LIMIT` (at most 250, inside Gmail's per-minute quota). Cancelled or deleted items disappear on the next sync. Syncs run after connecting, from Vercel Cron (`vercel.json`, daily: the Hobby limit; use `*/10 * * * *` on Pro), via `npm run google -- sync`, and every `GOOGLE_SYNC_MINUTES` on long-running servers (not on Vercel, whose process timers are not durable).
+- Tools answer from the database while the copy is fresh (synced within twice `GOOGLE_SYNC_MINUTES`, at least 30 minutes). Otherwise, and for dates outside the window or searches with no stored match, they ask Google inside the request under one `GOOGLE_LIVE_TIMEOUT_MS` deadline (default 1.5 s). Live mail search stays inside `GMAIL_SYNC_QUERY`. Nothing runs after the response (DEC-004).
+- Dates use `TIMEZONE`, else the Google calendar's zone, else UTC, including daylight-saving changes. `get_schedule`'s description tells the voice model today's date in that zone.
+- Email text is the sender, subject and Gmail's snippet (at most 300 characters), never full bodies. The refresh token is encrypted with AES-256-GCM; Google writes are fenced against a concurrent disconnect.
 
 ## Dial connection: follow-up work
 
-1. Deploy to Vercel (HTTPS by default), or use a development HTTPS tunnel to a local port.
-2. In Dial Context MCP settings, add `https://YOUR_BACKEND/mcp` with static header `Authorization: Bearer YOUR_DIAL_MCP_TOKEN`.
+1. Verify the production [health endpoint](https://recall-kappa-nine.vercel.app/health), or use a development HTTPS tunnel when testing a local backend.
+2. In Dial Context MCP settings, add `https://recall-kappa-nine.vercel.app/mcp` with static header `Authorization: Bearer YOUR_DIAL_MCP_TOKEN`.
 3. Configure the number's inbound instruction with `backend/voice/instructions.txt`.
-4. Set `DEMO_CALLER_NUMBER`, then call from that number with `DIAL_LOG_HEADERS=true` once. The log lists the header names Dial sent, with phone numbers cut to their last four digits. If the caller and direction headers differ from the defaults, set `DIAL_CALLER_HEADER` and `DIAL_DIRECTION_HEADER`, then turn logging off.
-5. Optional: in the Dial dashboard, add a webhook to `https://YOUR_BACKEND/webhooks/dial` and put its signing secret in `DIAL_WEBHOOK_SECRET`. Events such as `call.ended` and `call.transcribed` are stored once each; transcripts contain personal speech, so retention defaults to 30 days.
+4. Set `DEMO_CALLER_NUMBER` (and `CALLER_PIN`), then call from that number with `DIAL_LOG_HEADERS=true` once. The log lists the header names Dial sent, with phone numbers cut to their last four digits and other Dial values reduced to their length. If the caller and direction headers differ from the defaults, set `DIAL_CALLER_HEADER` and `DIAL_DIRECTION_HEADER`, then turn logging off.
+5. Optional: in the Dial dashboard, add a webhook to `https://…/webhooks/dial` and put its signing secret in `DIAL_WEBHOOK_SECRET`. Events such as `call.ended` and `call.transcribed` are stored once each; transcripts contain personal speech, so retention defaults to 30 days.
 
-Dial is expected to supply `X-Dial-User-Number` and `X-Dial-Direction` during calls; these names come from the scaffold and are not confirmed by public Dial docs, hence step 4. The backend checks the configured caller and inbound direction. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller. Dial offers no caller verification, and caller ID can be spoofed.
+Dial is expected to supply `X-Dial-User-Number` and `X-Dial-Direction` during calls; public Dial sources do not confirm these names, hence step 4. The backend checks the configured caller and inbound direction. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller.
 
-**The caller-number allowlist is not verified identity.** Set `CALLER_PIN` before connecting real Google data. The store is single-user. Keep the bearer secrets server-side.
+Vercel Deployment Protection must allow Dial and the laptop uploader to reach the deployment. Their application bearer tokens do not bypass Vercel's login protection. Use the project's production domain with the intended access settings when connecting these external clients.
+
+**The caller-number allowlist is a demo restriction, not verified identity.** Set `CALLER_PIN` before connecting real Google data. For more than one user, add verified identity, user-scoped storage and credentials, consent, and retention controls. The store is single-user. Keep the bearer secrets server-side.
 
 Reference: [Dial Context MCP documentation](https://docs.getdial.ai/documentation/platform/context-mcp). This scaffold does not create phone resources or place calls.
 
@@ -159,18 +139,91 @@ python3 -m venv .venv
 PYTHON=.venv/bin/python npm run camera -- --once
 ```
 
-Omit `--once` for repeated capture. Defaults: webcam 0, one frame every 5 seconds. The npm command loads `.env`. Use `BACKEND_URL=https://YOUR_BACKEND` for remote uploads; remote plain HTTP is rejected. Running capture requests OS webcam permission.
+Omit `--once` for repeated capture. Defaults: webcam 0, one frame every 5 seconds. The npm command loads `.env`. Use `BACKEND_URL=https://recall-kappa-nine.vercel.app` and the production `CAMERA_TOKEN` for remote uploads; remote plain HTTP is rejected. Running capture requests OS webcam permission.
 
-Engineer 3 adds inference and posts observations. The current uploader explicitly reports that inference is unconfigured. Test a visible tabletop first, including hidden objects and missed placements.
+Use `PYTHON=.venv/bin/python npm run camera -- --preview` to position the tabletop locally; press `q` to stop. Preview mode also uploads snapshots. Capture requests 1280×720 and reduces JPEG quality as needed to remain under 500 KB. Set `GEMINI_API_KEY` on the backend and `DEMO_MODE=false` for live testing. Keep the laptop awake. Follow the [18-placement acceptance procedure](docs/object-memory.md#placement-acceptance) before claiming reliable object recall.
 
-## Docker (local stack or non-Vercel hosting)
+## Deployment infrastructure
+
+### Vercel and managed Postgres
+
+The existing [Vercel project `recall`](https://vercel.com/openfloor-51a7e770/recall) belongs to the **openfloor** team (`openfloor-51a7e770`). Its connected Git repository is `mattdomingo/speedhacks`, with `main` as the production branch. Pushes to `main` deploy production; other branches receive protected previews.
+
+Neon resources `recall-production` and `recall-preview` use the Free plan in `iad1`, alongside the function region. Their initialized databases and API tokens are separate. Each database is connected only to its matching Vercel environment. At the October 11 hosting handoff, production ran with `DEMO_MODE=true` and `DEMO_CALLER_NUMBER` was not configured, so MCP tool discovery works but callers cannot retrieve evidence until a consented test number is configured and deployed.
+
+Engineers should pull `main`, follow local startup above, and link the existing project if they need deployments:
 
 ```sh
-npm run setup
+npx vercel@latest link --project recall --scope openfloor-51a7e770
+```
+
+Do not create another production project or point previews at the production database. Ask the project owner for the correct environment's API tokens through a secure channel; they are Vercel Secrets, and `vercel env pull` returns `[SENSITIVE]` placeholders for them. Local `npm run setup` tokens work only against your local backend. Vercel Standard Protection keeps preview and generated deployment URLs private while the production domain above remains reachable with the application's bearer authentication. Use `vercel curl /health --deployment <preview-url>` for an authenticated preview health check.
+
+The repository is configured for Vercel Services with a single Express service:
+
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "recall": {
+      "root": ".",
+      "framework": "express",
+      "entrypoint": "server.mjs"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": { "service": "recall" }
+    }
+  ]
+}
+```
+
+The catch-all preserves existing request paths: `/health`, `/mcp`, `/camera/frame`, and `/camera/observations`. There is no frontend at `/`; unimplemented paths return 404. Only `/health` is unauthenticated. No internal services or service bindings are needed because all backend modules run in `recall`. The laptop's `BACKEND_URL` is a manually configured public HTTPS origin, not an injected binding. Do not deploy `camera/capture.py` to Vercel: it requires a local webcam and OS permission.
+
+The native Express runtime handles the backend; Vercel does not use the Dockerfile. The root `server.mjs` entrypoint loads the existing backend startup and lets Vercel's Express builder discover it. Postgres holds both observations and the latest JPEG. Database calls are asynchronous, and the connection pool uses Vercel's lifecycle helper. When `VERCEL=1`, startup fails without `DATABASE_URL` instead of using ephemeral SQLite.
+
+To recreate this infrastructure in a different Vercel project:
+
+1. Create or select a Vercel project for this repository, with its root directory set to the repository root and project framework preset set to **Services**. Use a Node 22 runtime as specified in `package.json`.
+2. Connect a managed Postgres database through the [Vercel Marketplace](https://vercel.com/docs/postgres), or use an existing provider. Select a database region near the Vercel function region. Set `DATABASE_URL` to the provider's pooled connection URL with TLS. Keep preview and production databases separate; a preview must not write production memories.
+3. Set the environment variables below in each Vercel environment you intend to deploy. Keep local secrets in ignored `.env` files, never in `vercel.json` or client code.
+4. Initialize each new database once before serving traffic. With its `DATABASE_URL` in your local ignored `.env` or exported shell environment, run `npm run db:init`. This executes `backend/schema.sql` and preserves existing tables and records. It does not copy existing SQLite data, and migrations do not run during Vercel builds or function startup.
+5. Link the repository with `npx vercel@latest link`, verify locally using `npx vercel@latest dev -L`, then deploy a preview with `npx vercel@latest --target preview`. After checking it, publish with `npx vercel@latest --prod`. Vercel otherwise assigns a new project's first deployment to production. Set the laptop's `BACKEND_URL` to the production HTTPS origin and configure Dial's `/mcp` URL.
+
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | Vercel and optional local Postgres testing | Managed Postgres connection URL; required on Vercel |
+| `DIAL_MCP_TOKEN` | Backend and Dial configuration | At least 32 characters; must differ from the camera token |
+| `CAMERA_TOKEN` | Backend and laptop | At least 32 characters; authenticates frames and observations |
+| `GEMINI_API_KEY` | Backend only | Paid Gemini API project; empty disables inference; requests use `store:false` |
+| `VISION_MODEL` | Backend only | Defaults to `gemini-3.8-flash` |
+| `DEMO_CALLER_NUMBER` | Backend | Consented caller in E.164 format; empty means no caller can retrieve evidence |
+| `DEMO_MODE` | Backend | `true` seeds synthetic records; defaults to `false` if omitted |
+| `BACKEND_URL` | Laptop only | Public backend origin, e.g. `https://YOUR_PROJECT.vercel.app`; local default follows `PORT` |
+| `DATA_DIR` | Local SQLite only | Database directory; default `./data`; ignored when `DATABASE_URL` is set |
+| `CALLER_PIN` | Backend | 4–8 digits callers must also say; set before connecting real Google data |
+| `ADMIN_TOKEN`, `GOOGLE_*`, `CRON_SECRET` | Backend | Google connection and sync; see [Google connection](#google-connection) |
+| `DIAL_WEBHOOK_SECRET`, `DIAL_*_HEADER`, `DIAL_LOG_HEADERS` | Backend | Dial webhooks and caller-header names |
+| `KEEWANO_API_KEY` | Backend | Optional Keewano analytics; empty disables it |
+| `PORT` | Local server/Compose | Default `3000`; Vercel manages its service port |
+
+To use `vercel dev -L`, put local test database credentials and application secrets in `.env`. Use the port printed by Vercel for `/health`, `/mcp`, and `BACKEND_URL`. This exercises the same service routing as deployment without creating cloud resources. `npm start` still runs the backend directly for SQLite development.
+
+After deployment, check `/health`, verify unauthenticated camera requests return 401, and test an authenticated upload and retrieval. `/health` is liveness only; it does not prove database connectivity. Run the MCP tests and a real Dial call before claiming the voice integration works. Existing SQLite records stay in `DATA_DIR`; moving those records into Postgres requires a separate import.
+
+The existing project and databases above were provisioned separately; these files alone do not provision them or a Dial number. See [Vercel Services](https://vercel.com/docs/services), [Express hosting](https://vercel.com/docs/frameworks/backend/express), and [database connection pools](https://vercel.com/kb/guide/connection-pooling-with-functions).
+
+### Local Docker Compose
+
+```sh
 docker compose up --build
 ```
 
-Compose runs Postgres 16 and the backend with a healthcheck, both bound to laptop loopback; the backend's `DATABASE_URL` points at the compose database. The Dockerfile also runs anywhere that injects the same environment variables and a `DATABASE_URL`, with HTTPS terminated at ingress. Keep the camera on the laptop. When hosted, register `https://YOUR_BACKEND/google/callback` with Google and keep `ADMIN_TOKEN` off shared machines.
+Compose includes environment injection, a healthcheck, and a persistent SQLite volume. The port binds to laptop loopback. Leave `DATABASE_URL` unset or empty to use that volume; a configured URL selects Postgres instead. For Docker hosts other than Vercel, SQLite requires persistent storage at `/app/data` and a single replica. Keep the camera on the laptop.
+
+Do not use ephemeral container storage for SQLite. Neither Compose nor the Dockerfile provisions cloud hosting.
 
 ## Sponsor tools
 
@@ -178,10 +231,10 @@ Compose runs Postgres 16 and the backend with a healthcheck, both bound to lapto
 | --- | --- | --- |
 | Dial | Phone number, managed voice agent, Context MCP to `/mcp`, signed webhooks to `/webhooks/dial` | Wired; header names to confirm on a live call |
 | Keewano | Product analytics: tool used, latency, evidence count, empty answers, evidence origin, rejected callers, sync results, Dial event types | Wired; set `KEEWANO_API_KEY` to enable |
-| Alike | Shared memory for the team's coding agents during the build (`npx @alikeai/setup`) | Dev-time only; `.alikeignore` keeps secrets out of captured sessions |
-| Sparta | Worlds (local SaaS replicas such as Gmail) for testing the email adapter against a mock inbox | Not wired: it needs configurable Google endpoints, which also redirect OAuth tokens and need a team decision |
+| Alike | Shared decision memory for the team's coding agents (see [AGENTS.md](AGENTS.md#alike-coordination-when-connected)) | Dev-time only; `.alikeignore` keeps secrets out of captured sessions |
+| Sparta | Worlds (local SaaS replicas such as Gmail) for testing the email adapter against a mock inbox | Not wired: it needs configurable Google endpoints, which would also redirect OAuth tokens |
 
-Keewano receives no phone numbers or personal content: callers become HMAC-derived UUIDs, rejected callers share one anonymous ID, and events carry only tool names, counts, latency and origin labels. Event definitions live in `backend/analytics/keewano.events.json`; append (never reorder), then run `npm run keewano:codegen`, which converts Keewano's generated TypeScript to plain JS with Node's built-in type stripping. CI fails if the generated file is stale.
+Keewano receives no phone numbers or personal content: callers become HMAC-derived UUIDs, rejected callers share one anonymous ID, and events carry only tool names, counts, latency and origin labels. Without a persistent disk (Vercel), batches stay in memory and ship within about two seconds. Event definitions live in `backend/analytics/keewano.events.json`; append (never reorder), then run `npm run keewano:codegen`, which converts Keewano's generated TypeScript to plain JS with Node's built-in type stripping. CI fails if the generated file is stale.
 
 ## Checks
 
@@ -190,4 +243,20 @@ npm test
 python3 -m unittest discover -s camera -p 'test_*.py'
 ```
 
-`npm test` uses in-process PGlite; `TEST_DATABASE_URL=postgres://… npm test` runs the same suite against a real server, each test in its own schema. GitHub Actions runs both, checks the generated Keewano module, runs the camera tests, and boots the compose stack and probes `/health` across a restart. Checks cover MCP discovery and retrieval, caller restrictions and PIN lockout, unknown evidence, validation, timestamp ordering, persistence, camera upload limits, Google OAuth (PKCE, single-use state, partial consent, revocation, undecryptable tokens) and sync against an in-process fake Google, time zones and DST, concurrent migrations, database wake-up retries, the refresh lease, cron auth, Dial webhook signatures and analytics privacy. A real Google account, real calls, a Vercel deployment, webcam accuracy, and clinical usefulness remain unverified.
+To run the backend suite against a disposable Postgres database:
+
+```sh
+TEST_DATABASE_URL=postgres://test:test@127.0.0.1:5432/speedhacks_test npm test
+```
+
+The test database user needs permission to create schemas. Each fixture creates and removes its own schema; the suite does not use `DATABASE_URL` or erase the database's existing tables. Use a direct local/test connection that supports PostgreSQL session options for these tests, not a production pooler.
+
+GitHub Actions is configured to run the backend suite with SQLite and Postgres 17, plus the Python camera suite. This configuration is not proof that a hosted CI run passed. Checks cover MCP authentication and retrieval, two-frame confirmation, timestamp ordering, duplicate/held/ambiguous objects, bounded processing, restart recovery, rollback consistency, and camera limits. A runnable MCP smoke test and physical acceptance procedure are in the [handoff](docs/object-memory.md). Google OAuth (PKCE, single-use state, partial consent, revocation, undecryptable tokens), sync, live fallback and freshness are tested on both adapters against an in-process fake Google, along with time zones and DST, the caller PIN lockout, Dial webhook signatures (including behind Vercel's request helpers) and analytics privacy. Real calls, a real Google account, and webcam accuracy need separate verification.
+
+The hosting handoff recorded the following checks for the foundation, before object recognition:
+
+GitHub Actions runs the backend suite with SQLite and Postgres 17, plus the Python camera suite. The [hosting foundation run](https://github.com/mattdomingo/speedhacks/actions/runs/38169291132) passed on October 11, 2026: 11 backend tests per database and 2 Python tests. Checks cover MCP discovery and retrieval, caller restrictions, unknown evidence, validation, timestamp ordering, persistence, and camera upload limits.
+
+Production verification also passed public health, root 404, unauthenticated rejection, authenticated JPEG upload/retrieval, durable Neon writes, MCP discovery, and rejection of callers without an allowlisted number. Synthetic verification data was removed afterward. Real Dial calls, Google access, webcam accuracy, and clinical usefulness remain unverified.
+
+The protected preview was also checked: its authenticated observation write appeared only in the preview database, never production, and was removed afterward.

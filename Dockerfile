@@ -4,8 +4,8 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY backend ./backend
 COPY contracts ./contracts
-COPY scripts/migrate.mjs ./scripts/migrate.mjs
+RUN mkdir /app/data && chown node:node /app/data
 USER node
-ENV PORT=3000
+ENV PORT=3000 DATA_DIR=/app/data
 EXPOSE 3000
 CMD ["node", "backend/index.mjs"]

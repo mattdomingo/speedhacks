@@ -1,5 +1,4 @@
 import { memoryResult } from '../../contracts/index.mjs';
-import { background } from '../background.mjs';
 
 // Words that carry no search signal in spoken questions ("did Sarah email me about dinner").
 const STOPWORDS = new Set(('a an and any about are at be by did do does email emails for from has have i in is it ' +
@@ -36,7 +35,6 @@ export async function getSchedule(store, date, google) {
     throw unavailable('Calendar');
   }
   if (calendar === 'connected') {
-    background(google.refreshIfStale(background), 'Google refresh');
     if (!(await google.covers(date))) {
       try {
         await google.fetchDay(date);
@@ -75,13 +73,15 @@ export async function searchMessages(store, text, google) {
   const gmail = google ? await google.state('gmail') : 'absent';
   if (gmail === 'reconnect_required' && !local.length) throw unavailable('Email');
   if (gmail !== 'connected') return memoryResult(local);
-  background(google.refreshIfStale(background), 'Google refresh');
-  if (local.length) return memoryResult(local);
+  // A fresh copy answers directly; a stale one (or a miss) asks Gmail within this request.
+  if (local.length && await google.mailFresh()) return memoryResult(local);
   try {
     // Gmail matches full bodies, which the stored snippet may not contain; trust its ranking.
-    return memoryResult(await google.searchMail(query.join(' ')));
+    const live = await google.searchMail(query.join(' '));
+    return memoryResult(live.length ? live : local);
   } catch (error) {
     console.error(`Live Gmail search failed: ${error.message}`);
+    if (local.length) return memoryResult(local);
     throw unavailable('Email');
   }
 }
