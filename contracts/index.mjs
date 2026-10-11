@@ -34,3 +34,41 @@ export const setReminderInput = z.object({
 export const listRemindersInput = z.object({ pin });
 export const cancelReminderInput = z.object({ id: z.string().min(1).max(100), pin });
 export const clockInput = z.object({});
+
+// Steph (iOS app). Unknown keys are stripped so they never reach the model.
+const isoTime = z.iso.datetime({ offset: true });
+const timeZone = z.string().max(64).refine(zone => {
+  try { return Boolean(new Intl.DateTimeFormat('en-US', { timeZone: zone })); } catch { return false; }
+}, 'Unknown time zone').nullish();
+export const memorySchema = z.object({
+  id: z.string().min(1).max(100),
+  type: z.enum(['photo', 'event', 'person', 'place', 'note']),
+  summary: z.string().trim().min(1).max(600),
+  people: z.array(z.string().max(100)).max(20).default([]),
+  place: z.string().max(200).nullish(),
+  timestamp: isoTime,
+  source: z.string().max(100),
+  confidence: z.number().min(0).max(1),
+});
+export const embedSchema = z.object({
+  texts: z.array(z.string().trim().min(1).max(2000)).min(1).max(64),
+  input_type: z.enum(['document', 'query']).default('document'),
+});
+export const askSchema = z.object({
+  question: z.string().trim().min(1).max(500),
+  now: isoTime,
+  time_zone: timeZone,
+  memories: z.array(memorySchema).max(24).default([]),
+});
+export const remindersSchema = z.object({
+  now: isoTime,
+  time_zone: timeZone,
+  candidates: z.array(z.object({
+    id: z.string().min(1).max(100),
+    kind: z.enum(['meeting', 'promise', 'birthday', 'parking', 'carry']),
+    title: z.string().trim().min(1).max(300),
+    when: isoTime.nullish(),
+    person: z.string().max(100).nullish(),
+    memories: z.array(memorySchema).min(1).max(12),
+  })).min(1).max(5),
+});

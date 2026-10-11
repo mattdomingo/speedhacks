@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 const secret = () => randomBytes(32).toString('hex');
 const generated = {
   DIAL_MCP_TOKEN: secret, CAMERA_TOKEN: secret, ADMIN_TOKEN: secret, GOOGLE_TOKEN_KEY: secret, CRON_SECRET: secret,
+  RECALL_APP_TOKEN: secret,
 };
 const content = `PORT=3000\nDATA_DIR=./data\n${Object.entries(generated).map(([key, make]) => `${key}=${make()}`).join('\n')}\n` +
   'DEMO_CALLER_NUMBER=\nDEMO_MODE=true\n';

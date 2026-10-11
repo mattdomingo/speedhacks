@@ -10,6 +10,7 @@ import { describeHeaders, dialWebhook } from './voice/webhooks.mjs';
 import { createAnalytics } from './analytics/index.mjs';
 import { createDial } from './voice/dial.mjs';
 import { createReminders } from './voice/reminders.mjs';
+import { STEPH_PATHS, stephGate, stephRoutes } from './steph/routes.mjs';
 
 function bearer(token) {
   return (req, res, next) => {
@@ -32,7 +33,7 @@ function validateTimestamp(timestamp) {
 }
 
 export function createApp(config, store, physicalOptions, {
-  google = createGoogle({ config, store }), analytics = createAnalytics({}), dial, now,
+  google = createGoogle({ config, store }), analytics = createAnalytics({}), dial, now, steph,
 } = {}) {
   const app = express();
   const physical = createPhysicalMemory(config, store, physicalOptions);
@@ -46,6 +47,7 @@ export function createApp(config, store, physicalOptions, {
   app.use('/mcp', bearer(config.DIAL_MCP_TOKEN));
   app.use('/camera', bearer(config.CAMERA_TOKEN));
   app.use('/camera', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  app.use(STEPH_PATHS, stephGate(config), bearer(config.RECALL_APP_TOKEN));
   app.use(express.json({ limit: '1mb' }));
   app.use('/google', googleRoutes(google, bearer(config.ADMIN_TOKEN)));
   // Vercel Cron, every minute: deliver due reminders and settle calls whose webhook never arrived.
@@ -54,6 +56,7 @@ export function createApp(config, store, physicalOptions, {
     res.set('Cache-Control', 'no-store').json(await reminders.dispatch());
   });
   app.use('/cron', cronRoutes(google, bearer(config.CRON_SECRET), { store, retentionDays: config.DIAL_EVENT_RETENTION_DAYS }));
+  app.use(stephRoutes(config, steph));
 
   app.all('/mcp', async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();
