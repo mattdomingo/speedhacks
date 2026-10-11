@@ -43,7 +43,7 @@ export function googleRoutes(google, adminAuth) {
   });
   router.get('/status', async (_req, res) => res.json(await google.status()));
   router.post('/sync', async (_req, res) => {
-    if (!(await google.can('calendar')) && !(await google.can('gmail'))) {
+    if (!(await google.sources()).length) {
       return res.status(409).json({ error: 'Google account is not connected', ...(await google.status()) });
     }
     res.json({ results: await google.syncAll(), ...(await google.status()) });
@@ -51,6 +51,23 @@ export function googleRoutes(google, adminAuth) {
   router.delete('/connection', async (_req, res) => {
     await google.disconnect();
     res.json(await google.status());
+  });
+  return router;
+}
+
+// Public: Google Calendar push notifications (events.watch). Only a channel token this backend
+// derived and a channel id the current connection holds are accepted; the sync then runs before
+// responding (DEC-004). Google sends no body and reads only the status code.
+export function googleWebhookRoutes(google) {
+  const router = express.Router();
+  router.post('/calendar', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (!google.configured) return res.status(503).end();
+    const { status } = await google.calendarNotification({
+      channelId: req.get('x-goog-channel-id'), token: req.get('x-goog-channel-token'),
+      resourceId: req.get('x-goog-resource-id'), state: req.get('x-goog-resource-state'),
+    });
+    res.status(status).end();
   });
   return router;
 }

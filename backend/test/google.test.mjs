@@ -10,7 +10,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
 import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
-import { createGoogle, endpoints, eventRecord, SCOPES } from '../digital/google.mjs';
+import { CONSENT_SCOPES, createGoogle, endpoints, eventRecord, SCOPES } from '../digital/google.mjs';
 import { addDays, localDate, startOfDay } from '../time.mjs';
 import { getSchedule, searchMessages } from '../digital/index.mjs';
 
@@ -25,19 +25,26 @@ const admin = { Authorization: `Bearer ${config.ADMIN_TOKEN}` };
 const today = localDate(new Date(), ZONE);
 const quietLog = { warn() {}, error() {} };
 
-// In-process stand-in for Google's OAuth, Calendar and Gmail endpoints.
+// In-process stand-in for Google's OAuth, Calendar, Gmail, People, Tasks and Photos Picker endpoints.
 function fakeGoogle() {
   const google = {
     calls: [], events: [], messages: [], failCalendar: false, revoked: [],
     grantedScope: Object.values(SCOPES).join(' '), refreshValid: true, account: 'me@example.com',
     accessAccounts: new Map(), refreshAccounts: new Map(),
+    // id_token claims; idTokenEmail null leaves the email out, idTokens false omits the token.
+    idTokens: true, idTokenEmail: undefined, idTokenAud: config.GOOGLE_CLIENT_ID,
+    eventQueries: [], changes: [], syncTokens: new Map(), goneTokens: new Set(), inserted: [], watches: [], stopped: [],
+    contacts: [], contactsPageSize: undefined, taskLists: [], fullFetches: [], picked: undefined, pickerSessions: 0,
   };
   const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status, headers: { 'Content-Type': 'application/json' },
   });
+  const jwt = claims => ['{"alg":"RS256"}', JSON.stringify(claims), 'signature']
+    .map(part => Buffer.from(part).toString('base64url')).join('.');
   google.fetch = async (input, init = {}) => {
     const url = new URL(input);
-    google.calls.push(`${init.method ?? 'GET'} ${url.host}${url.pathname}`);
+    const method = init.method ?? 'GET';
+    google.calls.push(`${method} ${url.host}${url.pathname}`);
     if (url.href === 'https://oauth2.googleapis.com/token') {
       const params = new URLSearchParams(init.body);
       google.lastTokenRequest = params;
@@ -50,10 +57,13 @@ function fakeGoogle() {
       google.accessAccounts.set(access, account);
       const refresh = account === 'me@example.com' ? 'refresh-secret-value' : `refresh-${google.calls.length}`;
       if (authorization) google.refreshAccounts.set(refresh, account);
+      const email = google.idTokenEmail === undefined ? account : google.idTokenEmail;
       return json({
         access_token: access, expires_in: 3600, token_type: 'Bearer',
         scope: google.grantedScope,
         ...(authorization ? { refresh_token: refresh } : {}),
+        ...(authorization && google.idTokens ? { id_token: jwt({ iss: 'https://accounts.google.com', aud: google.idTokenAud,
+          sub: '1', ...(email ? { email, email_verified: true } : {}) }) } : {}),
       });
     }
     if (url.href.startsWith('https://oauth2.googleapis.com/revoke')) {
@@ -62,21 +72,89 @@ function fakeGoogle() {
     }
     assert.match(init.headers.Authorization, /^Bearer access-/);
     const account = google.accessAccounts.get(init.headers.Authorization.slice(7));
+    const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
     if (url.pathname === '/calendar/v3/calendars/primary') return json({ id: account, timeZone: ZONE });
     if (url.pathname === '/gmail/v1/users/me/profile') return json({ emailAddress: account });
+    if (url.pathname === '/calendar/v3/calendars/primary/events' && method === 'POST') {
+      const event = { ...body, id: `steph${google.inserted.length + 1}`, status: 'confirmed',
+        htmlLink: `https://calendar.google.com/e/steph${google.inserted.length + 1}` };
+      google.inserted.push(body);
+      google.events.push(event);
+      return json(event);
+    }
+    if (url.pathname === '/calendar/v3/calendars/primary/events/watch' && method === 'POST') {
+      google.watches.push(body);
+      return json({ kind: 'api#channel', id: body.id, resourceId: `resource-${google.watches.length}`,
+        resourceUri: 'https://www.googleapis.com/calendar/v3/calendars/primary/events', token: body.token,
+        expiration: String(Date.now() + Number(body.params.ttl) * 1000) });
+    }
+    if (url.pathname === '/calendar/v3/channels/stop' && method === 'POST') {
+      google.stopped.push(body);
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname === '/calendar/v3/calendars/primary/events') {
       if (google.failCalendar) return json({ error: { errors: [{ reason: 'backendError' }] } }, 503);
-      const min = Date.parse(url.searchParams.get('timeMin'));
-      const max = Date.parse(url.searchParams.get('timeMax'));
-      return json({ items: google.events.filter(event => {
+      const params = Object.fromEntries(url.searchParams);
+      google.eventQueries.push(params);
+      const visible = google.events.filter(event => !event.account || event.account === account);
+      // A sync token remembers the whole calendar as it was; the next incremental list reports
+      // what changed since, with deletions as cancelled entries (plus any scripted `changes`).
+      const nextSyncToken = () => {
+        const token = `sync-${google.syncTokens.size + 1}`;
+        google.syncTokens.set(token, new Map(visible.map(event => [event.id, JSON.stringify(event)])));
+        return token;
+      };
+      if (params.syncToken) {
+        // As Google: these parameters cannot be combined with a sync token.
+        if (['timeMin', 'timeMax', 'orderBy', 'q', 'iCalUID', 'updatedMin'].some(name => name in params)) {
+          return json({ error: { errors: [{ reason: 'invalid' }] } }, 400);
+        }
+        const before = google.syncTokens.get(params.syncToken);
+        if (!before || google.goneTokens.has(params.syncToken)) {
+          return json({ error: { errors: [{ reason: 'fullSyncRequired' }] } }, 410);
+        }
+        const ids = new Set(visible.map(event => event.id));
+        // Google reports a deleted recurring series once, by its own id, not per instance.
+        const deleted = [...before.keys()].filter(id => !ids.has(id) && !id.includes('_')).map(id => ({ id, status: 'cancelled' }));
+        const items = [...visible.filter(event => before.get(event.id) !== JSON.stringify(event)), ...deleted, ...google.changes.splice(0)];
+        return json({ items, nextSyncToken: nextSyncToken() });
+      }
+      const min = Date.parse(params.timeMin);
+      const max = Date.parse(params.timeMax);
+      return json({ items: visible.filter(event => {
         const start = Date.parse(event.start.dateTime ?? `${event.start.date}T12:00:00-07:00`);
-        return (!event.account || event.account === account) && start >= min && start < max;
-      }) });
+        return start >= min && start < max;
+      }), nextSyncToken: nextSyncToken() });
     }
+    if (url.pathname === '/v1/people/me/connections') {
+      assert.match(url.searchParams.get('personFields'), /names.*phoneNumbers.*birthdays.*relations/);
+      const size = google.contactsPageSize ?? +url.searchParams.get('pageSize');
+      const offset = Number(url.searchParams.get('pageToken') ?? 0);
+      const next = offset + size < google.contacts.length ? String(offset + size) : undefined;
+      return json({ connections: google.contacts.slice(offset, offset + size), ...(next ? { nextPageToken: next } : {}) });
+    }
+    if (url.pathname === '/tasks/v1/users/@me/lists') {
+      return json({ items: google.taskLists.map(({ tasks: _tasks, ...list }) => list) });
+    }
+    const taskList = url.pathname.match(/^\/tasks\/v1\/lists\/([^/]+)\/tasks$/);
+    if (taskList) return json({ items: google.taskLists.find(list => list.id === decodeURIComponent(taskList[1]))?.tasks ?? [] });
+    if (url.pathname === '/v1/sessions' && method === 'POST') {
+      google.pickerSessions++;
+      return json({ id: `session-${google.pickerSessions}`, pickerUri: `https://photos.google.com/picker/session-${google.pickerSessions}`,
+        pollingConfig: { pollInterval: '5s', timeoutIn: '1800s' }, expireTime: new Date(Date.now() + 3600_000).toISOString(), mediaItemsSet: false });
+    }
+    const pickerSession = url.pathname.match(/^\/v1\/sessions\/([\w-]+)$/);
+    if (pickerSession && method === 'DELETE') return json({});
+    if (pickerSession) {
+      return json({ id: pickerSession[1], mediaItemsSet: Boolean(google.picked),
+        ...(google.picked ? {} : { pollingConfig: { pollInterval: '5s', timeoutIn: '1800s' } }) });
+    }
+    if (url.pathname === '/v1/mediaItems') return json({ mediaItems: google.picked ?? [] });
     if (url.pathname === '/gmail/v1/users/me/messages') {
       const q = url.searchParams.get('q');
       // Search operators (newer_than:30d, -category:social) scope by date; words must appear.
-      const words = q.split(' ').filter(word => !word.includes(':'));
+      // OR groups in braces narrow by category or keyword, which this fake does not model.
+      const words = q.replace(/\{[^}]*\}/g, ' ').split(' ').filter(word => word && !word.includes(':'));
       const days = Number(q.match(/newer_than:(\d+)d/)?.[1] ?? Infinity);
       const hits = google.messages.filter(message => Date.now() - Number(message.internalDate) <= days * 86_400_000 &&
         words.every(word => message.body.toLowerCase().split(' ').includes(word)));
@@ -85,7 +163,8 @@ function fakeGoogle() {
     }
     const message = url.pathname.match(/^\/gmail\/v1\/users\/me\/messages\/(\w+)$/);
     if (message) {
-      assert.deepEqual(url.searchParams.getAll('metadataHeaders'), ['From', 'Subject', 'Date']);
+      if (url.searchParams.get('format') === 'full') google.fullFetches.push(message[1]);
+      else assert.deepEqual(url.searchParams.getAll('metadataHeaders'), ['From', 'Subject', 'Date']);
       const found = google.messages.find(({ id }) => id === message[1]);
       return json({ ...found, threadId: `t${found.id}` });
     }
@@ -94,10 +173,10 @@ function fakeGoogle() {
   return google;
 }
 
-async function fixture(t, overrides = {}) {
+async function fixture(t, overrides = {}, options = {}) {
   const store = await testStore(t);
   const remote = fakeGoogle();
-  const google = createGoogle({ config: { ...config, ...overrides }, store, fetch: remote.fetch, log: quietLog });
+  const google = createGoogle({ config: { ...config, ...overrides }, store, fetch: remote.fetch, log: quietLog, ...options });
   const server = createApp({ ...config, ...overrides }, store, undefined, { google }).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
@@ -190,7 +269,7 @@ test('OAuth connect uses PKCE and single-use state, and encrypts the refresh tok
   assert.equal(callback.status, 200);
   assert.equal(authorizationUrl.searchParams.get('code_challenge_method'), 'S256');
   assert.equal(authorizationUrl.searchParams.get('access_type'), 'offline');
-  assert.equal(authorizationUrl.searchParams.get('scope'), Object.values(SCOPES).join(' '));
+  assert.equal(authorizationUrl.searchParams.get('scope'), CONSENT_SCOPES);
   assert.ok(remote.lastTokenRequest.get('code_verifier')?.length >= 43);
   const row = await store.googleConnection();
   assert.equal(row.email, 'me@example.com');
@@ -634,7 +713,7 @@ test('a cut emoji or NUL in Google text cannot fail the sync batch', async t => 
       payload: { headers: [{ name: 'From', value: 'b@example.com' }, { name: 'Subject', value: 'fine' }] } },
   ];
   const results = await google.syncAll();
-  assert.deepEqual(results.map(result => result.ok), [true, true]);
+  assert.deepEqual(results.map(result => result.ok), [true, true, true, true]);
   const counts = await store.countByOrigin();
   assert.equal(counts['google-calendar'], 1);
   assert.equal(counts['google-gmail'], 2);
@@ -694,6 +773,8 @@ test('Google endpoints can point at a local same-URL mock such as a Sparta World
         start: { dateTime: `${today}T12:00:00-07:00` }, end: { dateTime: `${today}T13:00:00-07:00` } }] });
     }
     if (url.pathname === '/gmail/v1/users/me/messages') return json({ messages: [{ id: 'g1', threadId: 't1' }] });
+    if (url.pathname === '/v1/people/me/connections') return json({ connections: [] });
+    if (url.pathname === '/tasks/v1/users/@me/lists') return json({ items: [] });
     if (url.pathname === '/gmail/v1/users/me/messages/g1') {
       return json({ id: 'g1', threadId: 't1', internalDate: String(Date.now()), snippet: 'Hello from the world',
         payload: { headers: [{ name: 'From', value: 'World <w@example.com>' }, { name: 'Subject', value: 'Hi' }] } });
@@ -710,7 +791,7 @@ test('Google endpoints can point at a local same-URL mock such as a Sparta World
   assert.equal(consent.origin, origin);
   assert.deepEqual(await google.completeConnect('code', consent.searchParams.get('state')),
     { email: 'world@example.com', scopes: Object.values(SCOPES) });
-  assert.deepEqual((await google.syncAll()).map(result => result.ok), [true, true]);
+  assert.deepEqual((await google.syncAll()).map(result => result.ok), [true, true, true, true]);
   assert.deepEqual(await store.countByOrigin(), { 'google-calendar': 1, 'google-gmail': 1 });
   assert.ok(['POST /token', 'GET /calendar/v3/calendars/primary/events', 'GET /gmail/v1/users/me/messages/g1']
     .every(call => seen.includes(call)));

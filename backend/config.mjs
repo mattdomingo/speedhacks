@@ -44,9 +44,16 @@ export function readConfig(env = process.env) {
     GOOGLE_SYNC_MINUTES: z.coerce.number().int().min(0).max(1440).default(10),
     // Live Google lookups happen mid-call; keep them well inside the voice agent's patience.
     GOOGLE_LIVE_TIMEOUT_MS: z.coerce.number().int().min(500).max(10_000).default(1500),
-    GMAIL_SYNC_QUERY: z.string().default('newer_than:30d -category:promotions -category:social'),
+    // Fact-bearing mail only (DEC-019): travel, reservations, deliveries, receipts, appointments,
+    // bills and tickets from the last 90 days. Live mail search stays inside this query too.
+    GMAIL_SYNC_QUERY: z.string().default('newer_than:90d -category:promotions -category:social ' +
+      '{category:reservations category:purchases flight itinerary "boarding pass" reservation booking confirmation ' +
+      'hotel receipt order shipped delivery tracking package appointment invoice bill "payment due" statement ticket tickets}'),
     // Each message costs 20 Gmail quota units; 250 stays under 6,000 units per user per minute.
     GMAIL_SYNC_LIMIT: z.coerce.number().int().min(1).max(250).default(100),
+    // Public origin of this backend for Google Calendar push notifications; defaults to the
+    // GOOGLE_REDIRECT_URI origin. Push channels are only created for an HTTPS address.
+    PUBLIC_BASE_URL: optional(z.url({ protocol: /^https?$/ })),
     // Local same-URL Google mocks such as a Sparta World (DEC-015); loopback only, never on Vercel.
     GOOGLE_API_BASE_URL: optional(z.url({ protocol: /^https?$/ })),
     GOOGLE_OAUTH_BASE_URL: optional(z.url({ protocol: /^https?$/ })),
