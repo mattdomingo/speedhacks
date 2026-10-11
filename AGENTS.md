@@ -173,6 +173,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** Cron plus database leases keeps delivery request-scoped ([DEC-004](#dec-004--finish-analysis-within-the-request)) with no new service or dependency. A per-minute cron needs a Vercel Pro team. Dial's idempotency key prevents duplicate calls on retry, and a lost webhook is reconciled from the call's status before any fallback. Texts have no such key, so they are sent at most once and never retried. Reminder tools and handlers stay off until `DIAL_API_KEY` is set, so an environment without the new table keeps serving. An answered call counts as delivered even when voicemail picks up. Caller ID is still not verified identity, and the store remains single-patient.
 - **Sources / validation:** [PR #5](https://github.com/mattdomingo/speedhacks/pull/5); `backend/voice/reminders.mjs`, `backend/test/reminders.test.mjs`. The suite passed on SQLite and Postgres 16 locally on 2026-10-11. Production configuration, a real reminder call through the hosted backend, and SMS deliverability without 10DLC registration are unverified.
 
+### DEC-015 — Sparta Worlds through loopback-only Google endpoints
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 2; requested and approved by Ali Haroon (Engineer 2) with the loopback-only limit. Amends the Sparta note in [DEC-010](#dec-010--google-digital-memory-synced-copy-with-in-request-live-fallback).
+- **Decision:** `GOOGLE_API_BASE_URL` and `GOOGLE_OAUTH_BASE_URL` may point the Google adapter at a same-URL mock such as a Sparta World. `config.mjs` accepts only `localhost`, `127.0.0.1` and `[::1]`, and refuses both settings when `VERCEL=1`; the backend warns at boot when either is set.
+- **Reason and consequences:** Deterministic local runs exercise OAuth, sync and live lookups without a real inbox, and a world's diff can show the adapter is read-only. Tokens are sent wherever these settings point, so they can never leave the machine or reach production. Calendar coverage depends on the world offering a Calendar replica.
+- **Sources / validation:** `backend/test/google.test.mjs` runs connect and sync against a local HTTP mock through real network calls and checks that remote and Vercel overrides are refused.
+
 Copy this template for the next decision:
 
 ```markdown

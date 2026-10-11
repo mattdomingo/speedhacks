@@ -261,7 +261,9 @@ Do not use ephemeral container storage for SQLite. Neither Compose nor the Docke
 | Dial | Steph's number (+12408962183), managed voice agent, Context MCP to `/mcp`, signed webhooks to `/webhooks/dial`, reminder calls and texts over REST | Wired; header names to confirm on a live call |
 | Keewano | Product analytics: tool used, latency, evidence count, empty answers, evidence origin, rejected callers, sync results, Dial event types | Wired; set `KEEWANO_API_KEY` to enable |
 | Alike | Shared decision memory for the team's coding agents (see [AGENTS.md](AGENTS.md#alike-coordination-when-connected)) | Dev-time only; `.alikeignore` keeps secrets out of captured sessions |
-| Sparta | Worlds (local SaaS replicas such as Gmail) for testing the email adapter against a mock inbox | Not wired: it needs configurable Google endpoints, which would also redirect OAuth tokens |
+| Sparta | Worlds (local same-URL SaaS replicas such as Gmail) for testing the Google adapter against a deterministic mock inbox | Wired for local testing only: `GOOGLE_API_BASE_URL` / `GOOGLE_OAUTH_BASE_URL` (loopback hosts only, refused on Vercel) |
+
+To run against a Sparta World (or any same-URL Google mock) on this machine, start it, then set `GOOGLE_API_BASE_URL=http://127.0.0.1:PORT` (and `GOOGLE_OAUTH_BASE_URL` if the world also mocks OAuth) with the usual Google settings, `npm start`, and `npm run google -- connect`. The backend warns at boot; tokens go only to the loopback host, and these settings are refused on Vercel. A read-only adapter should leave the world's end-of-run diff empty.
 
 Keewano receives no phone numbers or personal content: callers become HMAC-derived UUIDs, rejected callers share one anonymous ID, and events carry only tool names, counts, latency and origin labels. Without a persistent disk (Vercel), batches stay in memory and ship within about two seconds. Event definitions live in `backend/analytics/keewano.events.json`; append (never reorder), then run `npm run keewano:codegen`, which converts Keewano's generated TypeScript to plain JS with Node's built-in type stripping. CI fails if the generated file is stale.
 

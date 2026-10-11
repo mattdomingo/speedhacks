@@ -9,6 +9,9 @@ import { createAnalytics } from './analytics/index.mjs';
 const config = readConfig();
 const store = config.DATABASE_URL ? openPostgresStore(config.DATABASE_URL) : openStore(config.DATA_DIR);
 const analytics = createAnalytics(config);
+if (config.GOOGLE_API_BASE_URL || config.GOOGLE_OAUTH_BASE_URL) {
+  console.warn('WARNING: Google endpoints point at a local mock (Sparta World); this is not real Google data.');
+}
 const google = createGoogle({ config, store,
   onSync: results => analytics.sync({ caller: config.DEMO_CALLER_NUMBER, results }) });
 if (config.DEMO_MODE === 'true') await seedDemo(store, new Date(), await google.timeZone());
