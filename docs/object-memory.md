@@ -39,7 +39,7 @@ Illustrative supported response (camera metadata abbreviated):
     "timestamp": "2026-10-11T19:42:00.000Z",
     "demo": false,
     "bbox": [600, 100, 700, 250],
-    "model": "gemini-3.8-flash",
+    "model": "gemini-3.5-flash-lite",
     "frameId": "69c47b36818a0ad36ba63539e9ffcf4bd590f8b7409a127d1a60b3889f5f2c44"
   }],
   "camera": { "status": "live", "lastCapturedAt": "2026-10-11T19:42:00.000Z", "lastAnalyzedAt": "2026-10-11T19:42:00.000Z" }

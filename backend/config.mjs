@@ -14,7 +14,7 @@ export function readConfig(env = process.env) {
     DIAL_MCP_TOKEN: z.string().min(32),
     CAMERA_TOKEN: z.string().min(32),
     GEMINI_API_KEY: z.string().trim().default(''),
-    VISION_MODEL: z.string().trim().min(1).default('gemini-3.8-flash'),
+    VISION_MODEL: z.string().trim().min(1).default('gemini-3.5-flash-lite'),
     DEMO_CALLER_NUMBER: z.string().regex(/^\+[1-9]\d{7,14}$/).or(z.literal('')).default(''),
     DEMO_MODE: z.enum(['true', 'false']).default('false'),
     VERCEL: z.string().optional(),

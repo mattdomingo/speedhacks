@@ -36,7 +36,7 @@ export function createGeminiAnalyzer(config, fetchImpl = fetch) {
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.GEMINI_API_KEY },
         signal: AbortSignal.any([AbortSignal.timeout(20_000), ...(signal ? [signal] : [])]),
         body: JSON.stringify({
-          model: config.VISION_MODEL || 'gemini-3.8-flash',
+          model: config.VISION_MODEL || 'gemini-3.5-flash-lite',
           store: false,
           input: [
             { type: 'text', text: prompt },

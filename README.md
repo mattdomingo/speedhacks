@@ -198,7 +198,7 @@ To recreate this infrastructure in a different Vercel project:
 | `DIAL_MCP_TOKEN` | Backend and Dial configuration | At least 32 characters; must differ from the camera token |
 | `CAMERA_TOKEN` | Backend and laptop | At least 32 characters; authenticates frames and observations |
 | `GEMINI_API_KEY` | Backend only | Paid Gemini API project; empty disables inference; requests use `store:false` |
-| `VISION_MODEL` | Backend only | Defaults to `gemini-3.8-flash` |
+| `VISION_MODEL` | Backend only | Defaults to `gemini-3.5-flash-lite` |
 | `DEMO_CALLER_NUMBER` | Backend | Consented caller in E.164 format; empty means no caller can retrieve evidence |
 | `DEMO_MODE` | Backend | `true` seeds synthetic records; defaults to `false` if omitted |
 | `BACKEND_URL` | Laptop only | Public backend origin, e.g. `https://YOUR_PROJECT.vercel.app`; local default follows `PORT` |

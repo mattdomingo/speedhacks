@@ -41,7 +41,7 @@ test('Gemini uses stateless authenticated inline images and validates the REST r
     assert.ok(options.signal instanceof AbortSignal);
     const body = JSON.parse(options.body);
     assert.equal(body.store, false);
-    assert.equal(body.model, 'gemini-3.8-flash');
+    assert.equal(body.model, 'gemini-3.5-flash-lite');
     assert.equal(body.generation_config.max_output_tokens, 2048);
     assert.equal(body.input[1].data, Buffer.from('jpeg').toString('base64'));
     assert.equal(body.response_format.mime_type, 'application/json');

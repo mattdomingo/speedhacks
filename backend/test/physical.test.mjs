@@ -7,7 +7,7 @@ import { openStore } from '../store.mjs';
 import { createPhysicalMemory } from '../physical/pipeline.mjs';
 
 const keys = { object: 'keys', location: 'beside the mug', bbox: [100, 100, 200, 200], resting: true, uncertain: false };
-const config = { GEMINI_API_KEY: 'test-only', VISION_MODEL: 'gemini-3.8-flash' };
+const config = { GEMINI_API_KEY: 'test-only', VISION_MODEL: 'gemini-3.5-flash-lite' };
 const baseTime = Date.parse('2026-10-11T12:00:00Z');
 
 function fixture(t, analyze) {

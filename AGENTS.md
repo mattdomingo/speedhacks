@@ -166,6 +166,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** Public Dial sources confirm the webhook signature scheme (from `@getdial/sdk`) but not the Context MCP caller headers, so the first real call must confirm them. Transcripts are personal data, hence the retention bound. Reading the stream keeps signatures valid both with and without Vercel's request helpers.
 - **Sources / validation:** [PR #1](https://github.com/mattdomingo/speedhacks/pull/1); `backend/test/dial.test.mjs`, including a run behind emulated Vercel request helpers. Header names remain unverified until a live call.
 
+### DEC-014 — Use the verified Flash-Lite camera model
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 3.
+- **Decision:** Default `VISION_MODEL` to `gemini-3.5-flash-lite` and configure that model in production. Preserve Gemini Interactions with `store:false`, the 20-second timeout, and the existing confirmation rules. Keep the model explicit; no automatic provider or model fallback.
+- **Reason and consequences:** Live testing with `gemini-3.8-flash` hit repeated 503/timeouts and then a long 429 retry window. Three direct requests using the same real image succeeded with stable 3.5 Flash-Lite and found the visible phone and wallet; timed repeats took 1,781 and 1,844 ms. Existing hosted environment overrides need updating and redeployment. During this paused operational switch, clear only the old model's transient retry/candidate state, preserving evidence and usage. Recognition accuracy still requires the physical acceptance procedure.
+- **Sources / validation:** [Gemini model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite), [dated validation](docs/object-memory-validation.md). Alike decision “Use Gemini 3.5 Flash-Lite for Recall camera recognition,” recorded through MCP on October 11.
+
 Copy this template for the next decision:
 
 ```markdown
