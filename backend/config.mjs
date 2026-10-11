@@ -29,6 +29,10 @@ export function readConfig(env = process.env) {
     DIAL_LOG_HEADERS: z.enum(['true', 'false']).default('false'),
     DIAL_WEBHOOK_SECRET: optional(z.string().min(16)),
     DIAL_EVENT_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+    // Steph's Dial line: reminder calls and texts come from it, and reminder tools only answer on it.
+    STEPH_NUMBER: z.string().regex(/^\+[1-9]\d{7,14}$/).default('+12408962183'),
+    // Dial REST key for placing reminder calls and texts; unset turns reminders off.
+    DIAL_API_KEY: optional(z.string().min(1)),
     // Protects /google/* admin routes; Vercel Cron sends CRON_SECRET to /cron/google-sync.
     ADMIN_TOKEN: optional(secret),
     CRON_SECRET: optional(secret),
