@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS google_connection (
   status TEXT NOT NULL CHECK (status IN ('connected', 'reconnect_required')),
   connected_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Token-endpoint origin a connection was made against (DEC-015); NULL means real Google.
+ALTER TABLE google_connection ADD COLUMN IF NOT EXISTS token_origin TEXT;
 -- Retained across disconnects so late OAuth callbacks and reads cannot reuse an old connection.
 CREATE TABLE IF NOT EXISTS google_generation (
   slot INTEGER PRIMARY KEY CHECK (slot = 1),

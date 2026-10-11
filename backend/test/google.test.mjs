@@ -10,7 +10,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
 import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
-import { createGoogle, eventRecord, SCOPES } from '../digital/google.mjs';
+import { createGoogle, endpoints, eventRecord, SCOPES } from '../digital/google.mjs';
 import { addDays, localDate, startOfDay } from '../time.mjs';
 import { getSchedule, searchMessages } from '../digital/index.mjs';
 
@@ -784,4 +784,65 @@ test('loopback Google endpoints cannot redirect credentials or authenticated req
   await google.disconnect();
   assert.equal(forwarded, 0, 'revocation POST must not follow a 307');
   assert.equal(await store.googleConnection(), undefined);
+});
+
+test('a stored Google connection is never used, replaced or revoked through endpoints it was not made with', async t => {
+  const { url, google, remote, store } = await fixture(t);
+  await connectGoogle(url, store, remote);
+  remote.events = [{ id: 'real', status: 'confirmed', summary: 'Real appointment',
+    start: { dateTime: `${today}T10:00:00-07:00` }, end: { dateTime: `${today}T11:00:00-07:00` } }];
+  await google.syncAll();
+  const before = await store.countByOrigin();
+
+  const seen = [];
+  const world = createServer((req, res) => {
+    seen.push(`${req.method} ${req.url}`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ access_token: 'mock', expires_in: 3600, refresh_token: 'mock-refresh',
+      scope: Object.values(SCOPES).join(' '), items: [], messages: [] }));
+  }).listen(0, '127.0.0.1');
+  await once(world, 'listening');
+  t.after(() => new Promise(resolve => world.close(resolve)));
+  const origin = `http://127.0.0.1:${world.address().port}`;
+  const mock = createGoogle({ config: { ...config, GOOGLE_API_BASE_URL: origin, GOOGLE_OAUTH_BASE_URL: origin },
+    store, log: quietLog });
+
+  // The real connection is invisible to the mock configuration: no refresh, no sync, no overwrite.
+  assert.equal(await mock.can('calendar'), false);
+  assert.deepEqual(await mock.syncAll(), []);
+  await assert.rejects(mock.fetchDay(today), /not connected/);
+  await assert.rejects(mock.beginConnect(), /made against https:\/\/oauth2\.googleapis\.com/);
+  await assert.rejects(mock.disconnect(), /disconnect it with matching Google endpoint settings/);
+  assert.equal((await mock.status()).foreignConnection.tokenEndpoint, 'https://oauth2.googleapis.com');
+  assert.deepEqual(seen, [], 'nothing, least of all the real refresh token, reached the mock');
+  assert.deepEqual(await store.countByOrigin(), before);
+  assert.equal(await google.can('calendar'), true, 'the real configuration still uses its connection');
+
+  // Rows saved before origins were recorded count as real Google connections.
+  await store.sql('UPDATE google_connection SET token_origin = NULL');
+  assert.equal(await google.can('calendar'), true);
+  assert.equal(await mock.can('calendar'), false);
+
+  // And the reverse: a mock connection is never sent to real Google.
+  await google.disconnect();
+  const consent = new URL(await mock.beginConnect());
+  await mock.completeConnect('code', consent.searchParams.get('state'));
+  assert.equal(await mock.can('calendar'), true);
+  const tokenCalls = remote.calls.filter(call => call === 'POST oauth2.googleapis.com/token').length;
+  assert.equal(await google.can('calendar'), false);
+  assert.deepEqual(await google.syncAll(), []);
+  assert.equal(remote.calls.filter(call => call === 'POST oauth2.googleapis.com/token').length, tokenCalls);
+});
+
+test('mock Google endpoints need a clean base URL and a local database', () => {
+  const base = { DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64) };
+  for (const value of ['http://127.0.0.1:8080?x', 'http://127.0.0.1:8080#x', 'http://u:p@127.0.0.1:8080']) {
+    assert.throws(() => readConfig({ ...base, GOOGLE_API_BASE_URL: value }), /plain origin and path/, value);
+  }
+  assert.throws(() => readConfig({ ...base, GOOGLE_OAUTH_BASE_URL: 'http://127.0.0.1:8080',
+    DATABASE_URL: 'postgres://u:p@ep-recall.example.com/neondb' }), /local database/);
+  assert.equal(readConfig({ ...base, GOOGLE_OAUTH_BASE_URL: 'http://127.0.0.1:8080',
+    DATABASE_URL: 'postgres://u:p@127.0.0.1:5432/test' }).GOOGLE_OAUTH_BASE_URL, 'http://127.0.0.1:8080');
+  assert.equal(endpoints({ GOOGLE_API_BASE_URL: 'http://127.0.0.1:8080/base/#' }).gmail,
+    'http://127.0.0.1:8080/base/gmail/v1/users/me');
 });

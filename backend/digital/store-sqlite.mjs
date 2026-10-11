@@ -24,6 +24,10 @@ export function sqliteDigitalStore(db) {
       item_count INTEGER NOT NULL DEFAULT 0, window_from TEXT, window_to TEXT
     );
   `);
+  // Token-endpoint origin a connection was made against (DEC-015); NULL means real Google.
+  if (!db.prepare('PRAGMA table_info(google_connection)').all().some(column => column.name === 'token_origin')) {
+    db.exec('ALTER TABLE google_connection ADD COLUMN token_origin TEXT');
+  }
   const insert = db.prepare(`INSERT INTO evidence (id, source, timestamp, payload) VALUES (?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET source=excluded.source, timestamp=excluded.timestamp, payload=excluded.payload`);
 
@@ -95,14 +99,16 @@ export function sqliteDigitalStore(db) {
     googleConnection() {
       return snapshot().connection;
     },
-    saveGoogleConnection({ email, scope, timezone, refreshToken, generation }) {
+    saveGoogleConnection({ email, scope, timezone, refreshToken, generation, tokenOrigin }) {
       return transaction(() => {
         if (snapshot().generation !== generation) return undefined;
         db.prepare('UPDATE google_generation SET generation = generation + 1 WHERE slot = 1').run();
-        db.prepare(`INSERT INTO google_connection VALUES (1, ?, ?, ?, ?, 'connected', ?)
+        db.prepare(`INSERT INTO google_connection (slot, email, scope, timezone, refresh_token, status, connected_at, token_origin)
+          VALUES (1, ?, ?, ?, ?, 'connected', ?, ?)
           ON CONFLICT(slot) DO UPDATE SET email=excluded.email, scope=excluded.scope, timezone=excluded.timezone,
-            refresh_token=excluded.refresh_token, status='connected', connected_at=excluded.connected_at`)
-          .run(email ?? null, scope, timezone ?? null, refreshToken, new Date().toISOString());
+            refresh_token=excluded.refresh_token, status='connected', connected_at=excluded.connected_at,
+            token_origin=excluded.token_origin`)
+          .run(email ?? null, scope, timezone ?? null, refreshToken, new Date().toISOString(), tokenOrigin ?? null);
         clearGoogleData();
         return snapshot().connection;
       });
