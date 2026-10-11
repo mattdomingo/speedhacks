@@ -137,6 +137,7 @@ export function createProactive({ config, store, deliver, dial, now = Date.now, 
       if (memory.details?.kind === 'flight' && Number.isFinite(departs)) {
         const travel = settings.airport_travel_minutes ?? DEFAULT_TRAVEL_MIN;
         const leaveBy = departs - (AIRPORT_BUFFER_MIN + travel) * 60_000;
+        if (leaveBy <= at) continue; // too late for a leave-by text to help
         const facts = [memory.details.flight_number && `Flight ${memory.details.flight_number}`,
           `leaves at ${clockOf(departs, zone)}`, memory.details.departure_airport && `from ${memory.details.departure_airport}`].filter(Boolean).join(' ');
         const lines = [`${facts}.`, memory.details.gate && `Gate ${memory.details.gate}.`,
@@ -244,6 +245,7 @@ export function createProactive({ config, store, deliver, dial, now = Date.now, 
     // One cron tick: plan today's items, deliver what is due, escalate ignored ones, settle calls.
     async tick() {
       const result = { planned: true, sent: 0, escalated: 0, settled: 0 };
+      await store.pruneAuth(iso(now() - 86_400_000));
       await plan();
       for (const nudge of await store.claimDueNudges(iso(now()), iso(now() + LEASE_MS))) {
         if (await sendFor(nudge, 'sending')) result.sent++;

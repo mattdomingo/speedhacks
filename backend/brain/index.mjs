@@ -139,7 +139,7 @@ export function createSteph({ config, store, google, physicalOptions, dial, clau
     const data = event.data ?? {};
     if (!['undelivered', 'failed'].includes(data.deliveryState) || !data.messageId) return false;
     const entry = await store.timelineByRef(`sms:${data.messageId}`);
-    if (!entry) return false;
+    if (!entry || await store.hasDecision(entry.user_id, 'delivery', data.messageId)) return false;
     await store.addDecision({ user_id: entry.user_id, at: iso(now()), item: 'Text delivery', channel: 'text', rule: 'delivery',
       reason: `text not delivered: ${String(data.deliveryError ?? data.deliveryState).slice(0, 200)}`, counted: false, ref: data.messageId });
     return true;

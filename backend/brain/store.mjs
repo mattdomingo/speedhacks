@@ -274,6 +274,9 @@ export function brainStore(driver) {
       [newId('d'), decision.user_id, decision.at, decision.item, decision.channel, decision.rule, decision.reason,
         decision.counted ? 1 : 0, decision.ref ?? null]);
     },
+    async hasDecision(userId, rule, ref) {
+      return Boolean(await one('SELECT 1 AS x FROM steph_decisions WHERE user_id = ? AND rule = ? AND ref = ?', [userId, rule, ref]));
+    },
     async decisions(userId, limit = 50) {
       return driver.all('SELECT at, item, channel, rule, reason, ref FROM steph_decisions WHERE user_id = ? ORDER BY at DESC LIMIT ?',
         [userId, limit]);
