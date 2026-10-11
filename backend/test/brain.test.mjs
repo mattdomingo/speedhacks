@@ -144,3 +144,45 @@ test('the phone syncs text-only memories; invalid ones are rejected and deletion
   await f.api('/v1/memories/sync', { token, body: { deletes: ['photos:A1'] } });
   assert.equal(await f.store.memoryCount(user.id), 2);
 });
+
+test('"connect my Google" hands the app a link; finishing it links Google to the same person', async t => {
+  const keys = await import('./brain-helpers.mjs').then(m => m.appleKeys());
+  const f = await fixture(t, { fetch: keys.fetch, script: (params, index) => index === 0
+    ? turn(toolUse('g1', 'connect_google', {}))
+    : turn(reply('r1', 'Tap the button to connect Google.')) });
+  const apple = (await f.api('/v1/auth/apple', { body: { identity_token: keys.token({}) } })).body;
+  const answer = (await f.api('/v1/steph/message', { token: apple.session_token, body: { text: 'Connect my Google' } })).body;
+  assert.equal(answer.reply.card.card_type, 'connect');
+  const state = new URL(answer.reply.card.action.url).searchParams.get('state');
+  const page = await f.api(`/google/callback?state=${state}&code=c`);
+  assert.equal(page.status, 200);
+  assert.match(page.text, /Google is connected to Steph/);
+  const me = (await f.api('/v1/me', { token: apple.session_token })).body;
+  assert.equal(me.google.email, 'ada@example.com');
+});
+
+test('"Disconnect Google" asks, then revokes and deletes what Steph learned from Google', async t => {
+  const f = await fixture(t, { script: (params, index) => index === 0
+    ? turn(toolUse('d1', 'disconnect_google', {}))
+    : turn(reply('r1', 'Disconnect Google and delete everything I learned from it?')) });
+  const { token, user } = await signIn(f, { phone: ADA });
+  await f.store.upsertMemories(user.id, [memory('gcal:1', 'Dentist at 4', { type: 'event', source: 'google-calendar' }),
+    memory('app:2', 'Bike is in the garage')], iso(START));
+  const asked = (await f.api('/v1/steph/message', { token, body: { text: 'Disconnect Google' } })).body;
+  assert.equal(f.google.disconnected, 0);
+  const done = (await f.api('/v1/steph/confirm', { token, body: { pending_action_id: asked.reply.card.pending_action_id, answer: 'yes' } })).body;
+  assert.match(done.reply.text, /Google is disconnected/);
+  assert.equal(f.google.disconnected, 1);
+  assert.deepEqual((await f.store.memoryCandidates(user.id, {})).map(item => item.source), ['app']);
+});
+
+test('settings change by asking: "Don\'t call me before 9" moves the end of quiet hours', async t => {
+  const f = await fixture(t, { script: (params, index) => index === 0
+    ? turn(toolUse('s1', 'update_settings', { quiet_end: '09:00' }))
+    : turn(reply('r1', "Okay, I won't call or text before 9.")) });
+  const { token } = await signIn(f, { phone: ADA });
+  await f.api('/v1/steph/message', { token, body: { text: "Don't call me before 9" } });
+  const me = (await f.api('/v1/me', { token })).body;
+  assert.equal(me.settings.quiet_end, '09:00');
+  assert.equal((await f.api('/v1/diagnostics', { token })).body.quiet_hours.end, '09:00');
+});
