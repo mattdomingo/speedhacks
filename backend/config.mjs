@@ -29,6 +29,10 @@ export function readConfig(env = process.env) {
     DIAL_LOG_HEADERS: z.enum(['true', 'false']).default('false'),
     DIAL_WEBHOOK_SECRET: optional(z.string().min(16)),
     DIAL_EVENT_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+    // Steph's Dial line: reminder calls and texts come from it, and reminder tools only answer on it.
+    STEPH_NUMBER: z.string().regex(/^\+[1-9]\d{7,14}$/).default('+12408962183'),
+    // Dial REST key for placing reminder calls and texts; unset turns reminders off.
+    DIAL_API_KEY: optional(z.string().min(1)),
     // Protects /google/* admin routes; Vercel Cron sends CRON_SECRET to /cron/google-sync.
     ADMIN_TOKEN: optional(secret),
     CRON_SECRET: optional(secret),
@@ -43,6 +47,9 @@ export function readConfig(env = process.env) {
     GMAIL_SYNC_QUERY: z.string().default('newer_than:30d -category:promotions -category:social'),
     // Each message costs 20 Gmail quota units; 250 stays under 6,000 units per user per minute.
     GMAIL_SYNC_LIMIT: z.coerce.number().int().min(1).max(250).default(100),
+    // Local same-URL Google mocks such as a Sparta World (DEC-015); loopback only, never on Vercel.
+    GOOGLE_API_BASE_URL: optional(z.url({ protocol: /^https?$/ })),
+    GOOGLE_OAUTH_BASE_URL: optional(z.url({ protocol: /^https?$/ })),
     // Optional Keewano product analytics; unset disables it entirely.
     KEEWANO_API_KEY: optional(z.string().min(1)),
     KEEWANO_ENDPOINT: optional(z.url({ protocol: /^https$/ })),
@@ -60,6 +67,18 @@ export function readConfig(env = process.env) {
   const google = GOOGLE_KEYS.filter(key => config[key]);
   if (google.some(key => key.startsWith('GOOGLE_CLIENT')) && google.length !== GOOGLE_KEYS.length) {
     throw new Error(`Google integration needs ${GOOGLE_KEYS.filter(key => !config[key]).join(', ')}`);
+  }
+  // On Vercel the scheduled cron is the only scheduled Google sync and Dial-transcript cleanup.
+  if (env.VERCEL === '1' && (config.GOOGLE_CLIENT_ID || config.DIAL_WEBHOOK_SECRET) && !config.CRON_SECRET) {
+    throw new Error('Set CRON_SECRET on Vercel so the scheduled cron can sync Google and prune Dial events');
+  }
+  // Google tokens are sent to these hosts, so they may only point at this machine.
+  for (const key of ['GOOGLE_API_BASE_URL', 'GOOGLE_OAUTH_BASE_URL']) {
+    if (!config[key]) continue;
+    if (env.VERCEL === '1') throw new Error(`${key} is for local mock testing and is not allowed on Vercel`);
+    if (!LOCAL_HOSTS.includes(new URL(config[key]).hostname)) {
+      throw new Error(`${key} must point at localhost, 127.0.0.1 or [::1]`);
+    }
   }
   if (config.GOOGLE_REDIRECT_URI) {
     const { protocol, hostname, pathname } = new URL(config.GOOGLE_REDIRECT_URI);

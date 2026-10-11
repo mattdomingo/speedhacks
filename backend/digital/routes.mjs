@@ -56,13 +56,18 @@ export function googleRoutes(google, adminAuth) {
 }
 
 // Vercel Cron calls this with `Authorization: Bearer $CRON_SECRET` (Hobby plans: once a day).
-// It also enforces Dial transcript retention, which otherwise only runs when a webhook arrives.
-// Each part touches its tables only when its feature is configured, so an environment that has
-// not yet run `npm run db:init` for them keeps working.
-export function cronRoutes(google, cronAuth, { store, retentionDays = 30, dialWebhooks = false } = {}) {
+// It also enforces Dial transcript retention, which otherwise only runs when a webhook arrives,
+// and keeps doing so after webhooks are switched off. A database that has not yet run
+// `npm run db:init` for the Dial table (Postgres 42P01) simply has nothing to prune.
+export function cronRoutes(google, cronAuth, { store, retentionDays = 30 } = {}) {
   const router = express.Router();
   router.get('/google-sync', cronAuth, async (_req, res) => {
-    const pruned = store && dialWebhooks ? await store.pruneDialEvents(retentionDays) : 0;
+    let pruned = 0;
+    try {
+      pruned = store ? await store.pruneDialEvents(retentionDays) : 0;
+    } catch (error) {
+      if (error.code !== '42P01') throw error;
+    }
     if (!google.configured) return res.json({ skipped: 'Google integration is not configured', prunedDialEvents: pruned });
     res.json({ results: await google.syncAll(), prunedDialEvents: pruned });
   });
