@@ -71,7 +71,8 @@ function fakeGoogle() {
       const max = Date.parse(url.searchParams.get('timeMax'));
       return json({ items: google.events.filter(event => {
         const start = Date.parse(event.start.dateTime ?? `${event.start.date}T12:00:00-07:00`);
-        return (!event.account || event.account === account) && start >= min && start < max;
+        const end = Date.parse(event.end.dateTime ?? `${event.end.date}T00:00:00-07:00`);
+        return (!event.account || event.account === account) && end > min && start < max;
       }) });
     }
     if (url.pathname === '/gmail/v1/users/me/messages') {
@@ -79,7 +80,10 @@ function fakeGoogle() {
       // Search operators (newer_than:30d, -category:social) scope by date; words must appear.
       const words = q.split(' ').filter(word => !word.includes(':'));
       const days = Number(q.match(/newer_than:(\d+)d/)?.[1] ?? Infinity);
+      const after = Number(q.match(/after:(\d+)/)?.[1] ?? -Infinity) * 1000;
+      const before = Number(q.match(/before:(\d+)/)?.[1] ?? Infinity) * 1000;
       const hits = google.messages.filter(message => Date.now() - Number(message.internalDate) <= days * 86_400_000 &&
+        Number(message.internalDate) > after && Number(message.internalDate) < before &&
         words.every(word => message.body.toLowerCase().split(' ').includes(word)));
       google.lastQuery = q;
       return json({ messages: hits.slice(0, +url.searchParams.get('maxResults')).map(({ id }) => ({ id, threadId: `t${id}` })) });
@@ -265,6 +269,62 @@ test('live Google failures cannot fall back to retained demo evidence', async t 
   assert.equal((await mail()).isError, true, 'demo mail does not hide expired Google access');
 });
 
+test('calendar recall retrieves historical ranges outside the sync window and includes overlapping plans', async t => {
+  const { url, remote, store } = await fixture(t);
+  const from = addDays(today, -14), through = addDays(today, -8);
+  remote.events = [calendarEvent('first', from), calendarEvent('last', through), calendarEvent('outside', today),
+    { id: 'trip', summary: 'Trip', start: { date: addDays(from, -1) }, end: { date: addDays(from, 2) } }];
+  await connectGoogle(url, store, remote);
+  await seedDemo(store, new Date(), ZONE);
+  const cachedIds = (await store.list('calendar')).map(item => item.id);
+  const client = await mcp(t, url);
+  const before = remote.calls.filter(call => call.endsWith('/events')).length;
+  const reply = await client.callTool({ name: 'get_schedule', arguments: { date: from, end_date: through } });
+  assert.ok(!reply.isError);
+  assert.deepEqual(reply.structuredContent.evidence.map(item => item.title), ['Trip', 'first', 'last']);
+  assert.ok(reply.structuredContent.evidence.every(item => item.origin === 'google-calendar' && !item.demo));
+  assert.equal(remote.calls.filter(call => call.endsWith('/events')).length, before + 1, 'one range query, not one query per day');
+  assert.deepEqual((await store.list('calendar')).map(item => item.id), cachedIds, 'historical reads do not replace the synced window');
+  remote.failCalendar = true;
+  assert.equal((await client.callTool({ name: 'get_schedule', arguments: { date: from, end_date: today } })).isError, true);
+});
+
+test('dated email recall uses local midnight bounds across DST and never returns adjacent days', async t => {
+  const { url, remote, store } = await fixture(t, { GMAIL_SYNC_QUERY: '-category:promotions' });
+  const date = '2026-03-08'; // 23-hour day in America/Los_Angeles.
+  remote.messages = [
+    ['before', '2026-03-08T07:59:59Z'], ['start', '2026-03-08T08:00:00Z'],
+    ['end', '2026-03-09T06:59:59Z'], ['after', '2026-03-09T07:00:00Z'],
+  ].map(([id, at]) => ({ id, internalDate: String(Date.parse(at)), snippet: 'passport renewal', body: 'passport renewal',
+    payload: { headers: [{ name: 'From', value: 'records@example.com' }] } }));
+  await connectGoogle(url, store, remote);
+  const client = await mcp(t, url);
+  for (const args of [{ date }, { date, end_date: date, query: 'passport' }]) {
+    const reply = await client.callTool({ name: 'search_messages', arguments: args });
+    assert.ok(!reply.isError);
+    assert.deepEqual(reply.structuredContent.evidence.map(item => item.id), ['gmail:end', 'gmail:start']);
+    assert.ok(remote.lastQuery.endsWith('-category:promotions'));
+    assert.match(remote.lastQuery, new RegExp(`after:${Date.parse('2026-03-08T08:00:00Z') / 1000 - 1} before:${Date.parse('2026-03-09T07:00:00Z') / 1000}`));
+  }
+});
+
+test('recall contracts validate date ranges and advertise yesterday and last-week boundaries', async t => {
+  const { url, remote, store } = await fixture(t);
+  await connectGoogle(url, store, remote);
+  const client = await mcp(t, url);
+  for (const name of ['get_schedule', 'search_messages']) {
+    for (const args of [{ end_date: today }, { date: today, end_date: addDays(today, -1) },
+      { date: today, end_date: addDays(today, 31) }, { date: '2026-02-30' }]) {
+      assert.equal((await client.callTool({ name, arguments: args })).isError, true);
+    }
+    assert.ok(!(await client.callTool({ name, arguments: { date: today, end_date: addDays(today, 30) } })).isError);
+    const tool = (await client.listTools()).tools.find(tool => tool.name === name);
+    const monday = addDays(today, -((new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7));
+    assert.ok(tool.description.includes(`yesterday is ${addDays(today, -1)}`));
+    assert.ok(tool.description.includes(`last week is ${addDays(monday, -7)} through ${addDays(monday, -1)}`));
+  }
+});
+
 test('email search ranks synced mail and falls back to live Gmail search', async t => {
   const { url, google, remote, store } = await fixture(t);
   await connectGoogle(url, store, remote);
@@ -311,6 +371,65 @@ test('revoked refresh tokens flag reconnection; disconnect revokes and purges Go
   assert.deepEqual(remote.revoked, ['refresh-secret-value']);
   assert.equal(await store.googleConnection(), undefined);
   assert.equal((await store.countByOrigin())['google-calendar'], undefined);
+});
+
+test('recent email requests check live scoped mail, cap and order results, and preserve the optional query contract', async t => {
+  const { url, google, remote, store } = await fixture(t);
+  remote.messages = Array.from({ length: 7 }, (_, i) => ({
+    id: `m${i}`, internalDate: String(Date.now() - i * 60_000), snippet: `Message ${i}`, body: `message ${i}`,
+    payload: { headers: [{ name: 'From', value: 'sender@example.com' }, { name: 'Subject', value: `Topic ${i}` }] },
+  }));
+  await connectGoogle(url, store, remote);
+  await seedDemo(store, new Date(), ZONE);
+  assert.equal(await google.mailFresh(), true);
+  // A new message arrives after sync; shuffle the selected results to check timestamp order.
+  remote.messages.unshift({ ...remote.messages[0], id: 'new', internalDate: String(Date.now() + 1) });
+  [remote.messages[1], remote.messages[3]] = [remote.messages[3], remote.messages[1]];
+  const client = await mcp(t, url);
+  const tool = (await client.listTools()).tools.find(tool => tool.name === 'search_messages');
+  assert.ok(!tool.inputSchema.required?.includes('query'));
+  for (const args of [{}, { query: 'recent emails' }, { query: 'email' }, { query: 'inbox' }]) {
+    const reply = await client.callTool({ name: 'search_messages', arguments: args });
+    assert.ok(!reply.isError);
+    assert.deepEqual(reply.structuredContent.evidence.map(item => item.id), ['gmail:new', 'gmail:m0', 'gmail:m1', 'gmail:m2', 'gmail:m3']);
+    assert.ok(reply.structuredContent.evidence.every(item => item.origin === 'google-gmail' && item.demo === false));
+    assert.equal(remote.lastQuery, config.GMAIL_SYNC_QUERY, 'recent lookup never widens the configured mail window');
+  }
+  for (const query of ['', ' ', 'x'.repeat(501), 42]) {
+    assert.equal((await client.callTool({ name: 'search_messages', arguments: { query } })).isError, true);
+  }
+  remote.messages = [];
+  const empty = await client.callTool({ name: 'search_messages', arguments: {} });
+  assert.equal(empty.structuredContent.status, 'unknown');
+  assert.deepEqual(empty.structuredContent.evidence, [], 'live emptiness must not revive cached or demo messages');
+});
+
+test('recent email failures and expired access cannot masquerade as an empty or current inbox', async t => {
+  const { url, google, remote, store } = await fixture(t);
+  remote.messages = [passportMessage()];
+  await connectGoogle(url, store, remote);
+  const client = await mcp(t, url);
+  google.searchMail = async () => { throw new DOMException('timed out', 'TimeoutError'); };
+  const recent = await client.callTool({ name: 'search_messages', arguments: {} });
+  assert.equal(recent.isError, true, 'timeout must not pass off the cached message as current');
+  assert.match(recent.content[0].text, /Email is unavailable/);
+  assert.equal((await client.callTool({ name: 'search_messages', arguments: { query: 'passport' } })).structuredContent.status, 'supported');
+  await store.markGoogleReconnectRequired((await store.googleSnapshot()).generation);
+  assert.equal((await client.callTool({ name: 'search_messages', arguments: {} })).isError, true);
+});
+
+test('recent mail cannot disclose retained demo or Google evidence without Gmail consent', async t => {
+  const { url, remote, store } = await fixture(t);
+  remote.grantedScope = SCOPES.calendar;
+  await connectGoogle(url, store, remote);
+  await seedDemo(store, new Date(), ZONE);
+  await store.put({ id: 'gmail:legacy', source: 'email', origin: 'google-gmail', timestamp: new Date().toISOString(), text: 'old account mail', demo: false });
+  const before = remote.calls.length;
+  const client = await mcp(t, url);
+  const reply = await client.callTool({ name: 'search_messages', arguments: {} });
+  assert.equal(reply.structuredContent.status, 'unknown');
+  assert.deepEqual(reply.structuredContent.evidence, []);
+  assert.equal(remote.calls.length, before, 'no Gmail call without Gmail consent');
 });
 
 test('evidence carries sender addresses and unanswered invitations, and search ignores boilerplate', async t => {
@@ -555,25 +674,26 @@ test('narrower consent fences an in-flight sync and both success and error metad
 });
 
 test('disconnect fences live responses and cached fallbacks, then reconnect cannot revive them', async t => {
-  for (const source of ['calendar', 'gmail']) await t.test(source, async t => {
+  for (const source of ['calendar', 'calendar-range', 'gmail', 'gmail-recent']) await t.test(source, async t => {
     const { google, remote, store } = await fixture(t);
     await authorize(google);
     remote.events = [calendarEvent('private-calendar')];
     remote.messages = [passportMessage()];
-    if (source === 'gmail') await google.syncEmail();
-    const held = heldFetch(remote.fetch, url => source === 'calendar' ? url.pathname.endsWith('/events') : url.pathname.endsWith('/messages/passport'));
+    if (source.startsWith('gmail')) await google.syncEmail();
+    const held = heldFetch(remote.fetch, url => source.startsWith('calendar') ? url.pathname.endsWith('/events') : url.pathname.endsWith('/messages/passport'));
     const oldWorker = createGoogle({ config, store, fetch: held.fetch, log: quietLog });
     // Force live mail lookup while retaining a local match, exercising the error fallback too.
     oldWorker.mailFresh = async () => false;
     held.enable();
-    const pending = source === 'calendar' ? getSchedule(store, today, oldWorker) : searchMessages(store, 'passport', oldWorker);
+    const pending = source.startsWith('calendar') ? getSchedule(store, today, oldWorker, { endDate: source === 'calendar-range' ? addDays(today, 6) : today })
+      : searchMessages(store, source === 'gmail-recent' ? undefined : 'passport', oldWorker);
     const rejected = assert.rejects(pending, /Google connection changed/);
     await held.reached;
     await google.disconnect();
     await authorize(google);
     held.release();
     await rejected;
-    assert.deepEqual(await store.list(source === 'calendar' ? 'calendar' : 'email'), []);
+    assert.deepEqual(await store.list(source.startsWith('calendar') ? 'calendar' : 'email'), []);
     assert.deepEqual(await store.syncState(), []);
   });
 });

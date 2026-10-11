@@ -476,10 +476,17 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
     },
 
     // Live lookups run during a phone call, so they share one short deadline.
-    async fetchDay(date, context) {
+    async fetchRange(from, through, context) {
       context = requireConnected(context ?? await snapshot('calendar'));
       const zone = config.TIMEZONE || context.connection.timezone || 'UTC';
-      const records = await listEvents(startOfDay(date, zone), startOfDay(addDays(date, 1), zone), context, config.GOOGLE_LIVE_TIMEOUT_MS ?? 1500);
+      const records = await listEvents(startOfDay(from, zone), startOfDay(addDays(through, 1), zone), context, config.GOOGLE_LIVE_TIMEOUT_MS ?? 1500);
+      await assertCurrent(context);
+      return records;
+    },
+
+    async fetchDay(date, context) {
+      context = requireConnected(context ?? await snapshot('calendar'));
+      const records = await google.fetchRange(date, date, context);
       if (!(await store.replaceCalendarDay(date, records, context.generation))) throw changedConnection();
       await assertCurrent(context);
       return records;

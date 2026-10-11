@@ -15,8 +15,16 @@ export const frameSchema = z.object({
 // Optional on every memory tool; required at runtime only when the backend sets CALLER_PIN.
 const pin = z.string().trim().regex(/^\d{4,8}$/).optional()
   .describe('Caller PIN, only when a previous answer said a PIN is required');
-export const scheduleInput = z.object({ date: z.iso.date(), pin });
-export const messagesInput = z.object({ query: shortText, pin });
+const endDate = z.iso.date().optional().describe('Inclusive last date; omit for a single day. Maximum 31 days per request.');
+const validRange = ({ date, end_date }) => !end_date || (date && end_date >= date && Date.parse(end_date) - Date.parse(date) < 31 * 86_400_000);
+const rangeMessage = { message: 'end_date requires date and must be within 31 days on or after it', path: ['end_date'] };
+export const scheduleInput = z.object({ date: z.iso.date(), end_date: endDate, pin }).refine(validRange, rangeMessage);
+export const messagesInput = z.object({
+  query: shortText.optional().describe('Sender or topic keywords. Omit for recent emails when the caller has no specific clue.'),
+  date: z.iso.date().optional().describe('First local date to search; omit for the configured recent-mail window.'),
+  end_date: endDate,
+  pin,
+}).refine(validRange, rangeMessage);
 export const objectInput = z.object({ object: shortText, pin });
 
 export function memoryResult(evidence) {
