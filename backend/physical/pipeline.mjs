@@ -4,7 +4,7 @@ import { cameraStatus } from './state.mjs';
 
 export function createPhysicalMemory(config, store, { analyze = createGeminiAnalyzer(config), now = Date.now } = {}) {
   const configured = Boolean(config.GEMINI_API_KEY);
-  const model = config.VISION_MODEL || 'gemini-3.8-flash';
+  const model = config.VISION_MODEL || 'gemini-3.5-flash-lite';
   return {
     async status() {
       const [state, frame] = await Promise.all([store.readCameraState(), store.latestFrame()]);
