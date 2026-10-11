@@ -69,6 +69,20 @@ final class WalkthroughTests: XCTestCase {
         attach(app, "06-passport")
     }
 
+    func testMedicineDemoCard() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-RecallInMemoryStore", "-RecallDemo", "-RecallSkipOnboarding"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 10))
+        app.buttons["Settings"].tap()
+        app.buttons["Show medicine reminder"].tap()
+        XCTAssertTrue(app.staticTexts["This is your demo reminder to take your medicine."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["DEMO · FICTIONAL REMINDER"].exists)
+        attach(app, "medicine-demo")
+        app.buttons["Thanks!"].tap()
+        XCTAssertTrue(app.textFields["Type to Steph"].waitForExistence(timeout: 5))
+    }
+
     func testOnboardingScreens() {
         let app = XCUIApplication()
         app.launchArguments = ["-RecallInMemoryStore", "-phase", "signUp"]

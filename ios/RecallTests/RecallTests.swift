@@ -242,6 +242,25 @@ final class ProactiveEngineTests: XCTestCase {
 }
 
 final class MemoryStoreTests: XCTestCase {
+    func testMedicineDemoNotificationAndCleanup() async throws {
+        let reminder = DemoSeed.medicineReminder(now: now)
+        XCTAssertTrue(reminder.isDemo)
+        XCTAssertEqual(reminder.fireDate, now)
+        XCTAssertEqual(reminder.buttons, ["Thanks!"])
+        XCTAssertTrue(reminder.memoryIDs.isEmpty)
+        let content = Notifications.content(for: reminder)
+        XCTAssertEqual(content.body, "This is your demo reminder to take your medicine.")
+        XCTAssertEqual(content.userInfo["reminderID"] as? String, reminder.id)
+        XCTAssertTrue(content.subtitle.contains("Demo"))
+        let store = MemoryStore(modelContainer: try MemoryStore.makeContainer(inMemory: true))
+        try await store.save(reminder: reminder)
+        let saved = try await store.reminder(id: reminder.id)
+        XCTAssertEqual(saved, reminder)
+        try await store.removeDemoData()
+        let removed = try await store.reminder(id: reminder.id)
+        XCTAssertNil(removed)
+    }
+
     func testDemoSeedLoadsLinksAndRemoves() async throws {
         let store = MemoryStore(modelContainer: try MemoryStore.makeContainer(inMemory: true))
         try await DemoSeed.load(into: store, embedder: OnDeviceEmbedder(), now: now)

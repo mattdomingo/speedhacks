@@ -3,6 +3,14 @@ import Foundation
 /// Seeded memories for the live demo, dated relative to today so the story
 /// is always true: keys this morning, coffee with Priya at 3, Sam's promise.
 enum DemoSeed {
+    static func medicineReminder(now: Date = Date()) -> Reminder {
+        Reminder(id: "demo-reminder-medicine", kind: .promise,
+                 subtitle: "Medicine reminder · Demo",
+                 body: "This is your demo reminder to take your medicine.",
+                 sourceLine: "DEMO · FICTIONAL REMINDER", memoryIDs: [], buttons: ["Thanks!"],
+                 fireDate: now, score: 1, isDemo: true)
+    }
+
     static let priya = Person(id: "demo-person-priya", name: "Priya", isDemo: true)
     static let sam = Person(id: "demo-person-sam", name: "Sam Chen", aliases: ["Sam"], relationship: "friend", isDemo: true)
 
