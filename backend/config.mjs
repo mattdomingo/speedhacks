@@ -8,11 +8,16 @@ const GOOGLE_KEYS = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REDIREC
 export function readConfig(env = process.env) {
   const config = z.object({
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-    DATA_DIR: z.string().min(1).default('./data'),
+    // Postgres (Neon via the Vercel Marketplace sets DATABASE_URL; older Vercel Postgres sets POSTGRES_URL).
+    DATABASE_URL: z.string().regex(/^postgres(ql)?:\/\//, 'Expected a postgres:// connection string'),
+    // Vercel Cron sends `Authorization: Bearer $CRON_SECRET` to /cron/google-sync.
+    CRON_SECRET: optional(secret),
     DIAL_MCP_TOKEN: secret,
     CAMERA_TOKEN: secret,
     DEMO_CALLER_NUMBER: z.string().regex(/^\+[1-9]\d{7,14}$/).or(z.literal('')).default(''),
     DEMO_MODE: z.enum(['true', 'false']).default('false'),
+    // Second factor for callers: caller ID alone is spoofable. Set before connecting real Google data.
+    CALLER_PIN: optional(z.string().regex(/^\d{4,8}$/, 'Expected 4 to 8 digits')),
     // Dial Context MCP caller headers; names are configurable until confirmed on a live call.
     DIAL_CALLER_HEADER: z.string().regex(/^[A-Za-z0-9-]+$/).default('x-dial-user-number'),
     DIAL_DIRECTION_HEADER: z.string().regex(/^[A-Za-z0-9-]+$/).default('x-dial-direction'),
@@ -30,16 +35,19 @@ export function readConfig(env = process.env) {
     GOOGLE_CALENDAR_IDS: z.string().default('primary'),
     GOOGLE_SYNC_MINUTES: z.coerce.number().int().min(0).max(1440).default(10),
     // Live Google lookups happen mid-call; keep them well inside the voice agent's patience.
-    GOOGLE_LIVE_TIMEOUT_MS: z.coerce.number().int().min(500).max(10_000).default(2500),
+    GOOGLE_LIVE_TIMEOUT_MS: z.coerce.number().int().min(500).max(10_000).default(1500),
     GMAIL_SYNC_QUERY: z.string().default('newer_than:30d -category:promotions -category:social'),
-    GMAIL_SYNC_LIMIT: z.coerce.number().int().min(1).max(500).default(100),
+    // Each message costs 20 Gmail quota units; 250 stays under 6,000 units per user per minute.
+    GMAIL_SYNC_LIMIT: z.coerce.number().int().min(1).max(250).default(100),
     // Optional Keewano product analytics; unset disables it entirely.
     KEEWANO_API_KEY: optional(z.string().min(1)),
     KEEWANO_ENDPOINT: optional(z.url({ protocol: /^https$/ })),
-  }).parse(env);
-  const secrets = [config.DIAL_MCP_TOKEN, config.CAMERA_TOKEN, config.ADMIN_TOKEN, config.DIAL_WEBHOOK_SECRET].filter(Boolean);
+    // Unset (and always on Vercel) keeps unsent analytics batches in memory.
+    KEEWANO_DATA_DIR: optional(z.string().min(1)),
+  }).parse({ ...env, DATABASE_URL: env.DATABASE_URL || env.POSTGRES_URL });
+  const secrets = [config.DIAL_MCP_TOKEN, config.CAMERA_TOKEN, config.ADMIN_TOKEN, config.DIAL_WEBHOOK_SECRET, config.CRON_SECRET].filter(Boolean);
   if (new Set(secrets).size !== secrets.length) {
-    throw new Error('Use separate Dial, camera, admin and webhook secrets');
+    throw new Error('Use separate Dial, camera, admin, webhook and cron secrets');
   }
   // Google is all-or-nothing so a half-configured deployment fails at boot, not mid-call.
   const google = GOOGLE_KEYS.filter(key => config[key]);

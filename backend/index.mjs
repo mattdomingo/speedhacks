@@ -1,26 +1,23 @@
-import { readConfig } from './config.mjs';
-import { openStore } from './store.mjs';
-import { seedDemo } from './demo.mjs';
-import { createApp } from './app.mjs';
-import { createGoogle } from './digital/google.mjs';
-import { createAnalytics } from './analytics/index.mjs';
+// Long-running server: npm start, Docker. Syncs Google on a timer instead of Vercel Cron.
+import { createRuntime } from './runtime.mjs';
 
-const config = readConfig();
-const store = openStore(config.DATA_DIR);
-const analytics = createAnalytics(config);
-const google = createGoogle({ config, store,
-  onSync: results => analytics.sync({ caller: config.DEMO_CALLER_NUMBER, results }) });
-if (config.DEMO_MODE === 'true') seedDemo(store, new Date(), google.timeZone());
+const { config, store, google, analytics, app, boot } = createRuntime();
+await boot();
 const stopSync = google.start();
-const server = createApp(config, store, google, analytics).listen(config.PORT, '0.0.0.0', () => {
+const server = app.listen(config.PORT, '0.0.0.0', async () => {
+  const status = await google.status();
   console.log(`Memory backend listening on ${config.PORT}; demo=${config.DEMO_MODE}; ` +
-    `google=${google.configured ? (google.status().connection?.status ?? 'disconnected') : 'not_configured'}; ` +
+    `google=${google.configured ? (status.connection?.status ?? 'disconnected') : 'not_configured'}; ` +
     `keewano=${analytics.enabled}`);
 });
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     stopSync();
-    server.close(async () => { await analytics.shutdown(); store.close(); process.exit(0); });
+    server.close(async () => {
+      await analytics.shutdown();
+      await store.close();
+      process.exit(0);
+    });
     server.closeIdleConnections();
   });
 }

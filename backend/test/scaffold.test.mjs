@@ -1,33 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { once } from 'node:events';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
-import { openStore } from '../store.mjs';
+import { createStore } from '../store.mjs';
+import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
 import { seedDemo } from '../demo.mjs';
 import { findObject } from '../physical/index.mjs';
 
 const config = {
   DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64),
-  DEMO_CALLER_NUMBER: '+14155550123', DEMO_MODE: 'true',
+  DEMO_CALLER_NUMBER: '+14155550123', DEMO_MODE: 'true', DATABASE_URL: TEST_DATABASE_URL,
 };
 
 async function fixture(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'speedhacks-'));
-  const store = openStore(dir);
+  const store = await testStore(t);
   const server = createApp(config, store).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
   });
-  return { store, dir, url: `http://127.0.0.1:${server.address().port}` };
+  return { store, url: `http://127.0.0.1:${server.address().port}` };
 }
 
 async function connect(t, url, headers = {}) {
@@ -42,7 +37,10 @@ async function connect(t, url, headers = {}) {
 test('configuration fails closed with missing or reused secrets', () => {
   assert.throws(() => readConfig({}));
   assert.throws(() => readConfig({ ...config, CAMERA_TOKEN: config.DIAL_MCP_TOKEN }));
+  assert.throws(() => readConfig({ ...config, DATABASE_URL: undefined }));
   assert.equal(readConfig(config).PORT, 3000);
+  const { DATABASE_URL: _url, ...withoutDatabaseUrl } = config;
+  assert.equal(readConfig({ ...withoutDatabaseUrl, POSTGRES_URL: TEST_DATABASE_URL }).DATABASE_URL, TEST_DATABASE_URL);
 });
 
 test('camera endpoint rejects unauthenticated and malformed uploads', async t => {
@@ -56,18 +54,17 @@ test('camera endpoint rejects unauthenticated and malformed uploads', async t =>
 });
 
 test('observations survive reopening and newest timestamp wins, not upload order', async t => {
-  const { store, dir } = await fixture(t);
-  store.observe({ object: 'keys', location: 'new location', timestamp: '2026-01-02T00:00:00Z' });
-  store.observe({ object: 'keys', location: 'old location', timestamp: '2026-01-01T00:00:00Z' });
-  const reopened = openStore(dir);
-  assert.equal(findObject(reopened, ' KEYS ').evidence[0].location, 'new location');
-  assert.equal(findObject(reopened, 'wallet').status, 'unknown');
-  reopened.close();
+  const { store } = await fixture(t);
+  await store.observe({ object: 'keys', location: 'new location', timestamp: '2026-01-02T00:00:00Z' });
+  await store.observe({ object: 'keys', location: 'old location', timestamp: '2026-01-01T00:00:00Z' });
+  const reopened = createStore(store.db);
+  assert.equal((await findObject(reopened, ' KEYS ')).evidence[0].location, 'new location');
+  assert.equal((await findObject(reopened, 'wallet')).status, 'unknown');
 });
 
 test('MCP discovery works without caller headers but cannot retrieve data', async t => {
   const { store, url } = await fixture(t);
-  seedDemo(store);
+  await seedDemo(store);
   const client = await connect(t, url);
   assert.equal((await client.listTools()).tools.length, 3);
   assert.equal((await client.callTool({ name: 'find_object', arguments: { object: 'keys' } })).isError, true);
@@ -92,7 +89,7 @@ test('MCP requires its own secret and negotiates legacy initialization', async t
 
 test('authorized inbound MCP calls retrieve demo evidence and handle unknown objects', async t => {
   const { store, url } = await fixture(t);
-  seedDemo(store);
+  await seedDemo(store);
   const client = await connect(t, url, {
     'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'inbound',
   });
@@ -109,7 +106,7 @@ test('authorized inbound MCP calls retrieve demo evidence and handle unknown obj
 
 test('unknown caller and outbound direction cannot access memories', async t => {
   const { store, url } = await fixture(t);
-  seedDemo(store);
+  await seedDemo(store);
   for (const headers of [
     { 'X-Dial-User-Number': '+14155550999', 'X-Dial-Direction': 'inbound' },
     { 'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'outbound' },
@@ -128,7 +125,7 @@ test('frame ingestion validates JPEG and preserves newest capture', async t => {
     assert.equal(response.status, 201);
     assert.equal((await response.json()).inference, 'not_configured');
   }
-  assert.equal(store.latestFrame().timestamp, '2026-01-02T00:00:00Z');
+  assert.equal((await store.latestFrame()).timestamp, '2026-01-02T00:00:00Z');
   assert.equal((await fetch(`${url}/camera/frame`)).status, 401);
   assert.equal((await fetch(`${url}/camera/frame`, { headers })).status, 200);
   const invalid = await fetch(`${url}/camera/frame`, { method: 'POST', headers,

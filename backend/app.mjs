@@ -4,7 +4,7 @@ import { frameSchema, observationSchema } from '../contracts/index.mjs';
 import { handleMcp } from './voice/mcp.mjs';
 import { describeHeaders, dialWebhook } from './voice/webhooks.mjs';
 import { createGoogle } from './digital/google.mjs';
-import { googleRoutes } from './digital/routes.mjs';
+import { cronRoutes, googleRoutes } from './digital/routes.mjs';
 import { createAnalytics } from './analytics/index.mjs';
 
 function bearer(token) {
@@ -30,8 +30,8 @@ function validateTimestamp(timestamp) {
 export function createApp(config, store, google = createGoogle({ config, store }), analytics = createAnalytics({})) {
   const app = express();
   app.disable('x-powered-by');
-  app.get('/health', (_req, res) => {
-    const db = store.ping();
+  app.get('/health', async (_req, res) => {
+    const db = await store.ping().catch(() => false);
     res.status(db ? 200 : 503).json({ ok: db, demo: config.DEMO_MODE === 'true' });
   });
   // Signed by Dial over the raw body, so it is mounted before the JSON parser.
@@ -40,6 +40,7 @@ export function createApp(config, store, google = createGoogle({ config, store }
   app.use('/camera', bearer(config.CAMERA_TOKEN));
   app.use(express.json({ limit: '1mb' }));
   app.use('/google', googleRoutes(google, bearer(config.ADMIN_TOKEN)));
+  app.use('/cron', cronRoutes(google, bearer(config.CRON_SECRET), { store, retentionDays: config.DIAL_EVENT_RETENTION_DAYS }));
 
   app.all('/mcp', async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();
@@ -49,16 +50,16 @@ export function createApp(config, store, google = createGoogle({ config, store }
     const direction = req.get(config.DIAL_DIRECTION_HEADER ?? 'x-dial-direction');
     const reason = !config.DEMO_CALLER_NUMBER ? 'no_demo_caller' : !number ? 'no_caller_header'
       : number !== config.DEMO_CALLER_NUMBER ? 'unknown_caller' : direction !== 'inbound' ? 'not_inbound' : undefined;
-    await handleMcp(req, res, { store, google, analytics, timeZone: google.timeZone() },
+    await handleMcp(req, res, { store, google, analytics, timeZone: await google.timeZone(), callerPin: config.CALLER_PIN },
       { authorized: !reason, reason, number: reason ? undefined : number });
   });
 
-  app.post('/camera/observations', (req, res) => {
+  app.post('/camera/observations', async (req, res) => {
     const observation = observationSchema.parse(req.body);
     validateTimestamp(observation.timestamp);
-    res.status(201).json(store.observe(observation));
+    res.status(201).json(await store.observe(observation));
   });
-  app.post('/camera/frame', (req, res) => {
+  app.post('/camera/frame', async (req, res) => {
     const frame = frameSchema.parse(req.body);
     validateTimestamp(frame.timestamp);
     const jpeg = Buffer.from(frame.jpegBase64, 'base64');
@@ -66,11 +67,11 @@ export function createApp(config, store, google = createGoogle({ config, store }
       jpeg.at(-2) !== 0xff || jpeg.at(-1) !== 0xd9) {
       return res.status(400).json({ error: 'Expected JPEG, at most 500 KB' });
     }
-    store.saveFrame(frame.timestamp, jpeg);
+    await store.saveFrame(frame.timestamp, jpeg);
     res.status(201).json({ status: 'stored', inference: 'not_configured', timestamp: frame.timestamp });
   });
-  app.get('/camera/frame', (req, res) => {
-    const frame = store.latestFrame();
+  app.get('/camera/frame', async (req, res) => {
+    const frame = await store.latestFrame();
     if (!frame) return res.status(404).json({ error: 'No frame received' });
     res.set('X-Captured-At', frame.timestamp).type('jpeg').send(Buffer.from(frame.jpeg));
   });

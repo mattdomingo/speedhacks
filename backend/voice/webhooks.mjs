@@ -24,7 +24,7 @@ export function verifyDialSignature(secret, header, rawBody, now = Date.now()) {
 }
 
 export function dialWebhook(config, store, analytics) {
-  return [express.raw({ type: () => true, limit: '1mb' }), (req, res) => {
+  return [express.raw({ type: () => true, limit: '1mb' }), async (req, res) => {
     if (!config.DIAL_WEBHOOK_SECRET) return res.status(503).json({ error: 'Endpoint is not configured' });
     const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     if (!verifyDialSignature(config.DIAL_WEBHOOK_SECRET, req.get('x-dial-signature'), body)) {
@@ -37,7 +37,7 @@ export function dialWebhook(config, store, analytics) {
       return res.status(400).json({ error: 'Invalid event' });
     }
     // Stored as received, including transcripts; pruned after DIAL_EVENT_RETENTION_DAYS.
-    const fresh = store.recordDialEvent(event, config.DIAL_EVENT_RETENTION_DAYS);
+    const fresh = await store.recordDialEvent(event, config.DIAL_EVENT_RETENTION_DAYS ?? 30);
     if (fresh) analytics.dialEvent(event.type);
     res.json({ received: true, duplicate: !fresh });
   }];
@@ -45,11 +45,14 @@ export function dialWebhook(config, store, analytics) {
 
 const PHONE = /^\+?\d{7,15}$/;
 
-// Diagnostic for confirming Dial's Context MCP headers: names plus redacted Dial values.
+// Diagnostic for confirming Dial's Context MCP headers: names, plus enough of each Dial or
+// MCP value to recognise it (phone numbers: last four digits; anything else: shape only).
 export function describeHeaders(headers) {
   return Object.keys(headers).sort().map(name => {
     if (!name.startsWith('x-dial-') && !name.startsWith('mcp-')) return name;
     const value = String(headers[name]);
-    return `${name}=${PHONE.test(value) ? `…${value.slice(-4)}` : value.slice(0, 40)}`;
+    if (PHONE.test(value)) return `${name}=…${value.slice(-4)}`;
+    if (/^(inbound|outbound)$/i.test(value) || name === 'mcp-protocol-version') return `${name}=${value}`;
+    return `${name}=<${value.length} chars>`;
   }).join(', ');
 }

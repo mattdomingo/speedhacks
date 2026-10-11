@@ -1,5 +1,6 @@
 import express from 'express';
 import { z } from 'zod';
+import { background } from '../background.mjs';
 
 const callbackQuery = z.object({
   code: z.string().min(1).max(2048).optional(),
@@ -27,7 +28,7 @@ export function googleRoutes(google, adminAuth) {
     }
     try {
       await google.completeConnect(query.data.code, query.data.state);
-      google.syncAll().catch(() => {});
+      background(google.syncAll(), 'Initial Google sync');
       page(res, 200, 'Google account connected. You can close this tab.');
     } catch (error) {
       console.error(`Google connection failed: ${error.message}`);
@@ -36,19 +37,31 @@ export function googleRoutes(google, adminAuth) {
   });
 
   router.use(adminAuth);
-  router.post('/connect', (_req, res) => {
-    res.json({ authorizationUrl: google.beginConnect(), expiresInSeconds: 600 });
+  router.post('/connect', async (_req, res) => {
+    res.json({ authorizationUrl: await google.beginConnect(), expiresInSeconds: 600 });
   });
-  router.get('/status', (_req, res) => res.json(google.status()));
+  router.get('/status', async (_req, res) => res.json(await google.status()));
   router.post('/sync', async (_req, res) => {
-    if (!google.can('calendar') && !google.can('gmail')) {
-      return res.status(409).json({ error: 'Google account is not connected', ...google.status() });
+    if (!(await google.can('calendar')) && !(await google.can('gmail'))) {
+      return res.status(409).json({ error: 'Google account is not connected', ...(await google.status()) });
     }
-    res.json({ results: await google.syncAll(), ...google.status() });
+    res.json({ results: await google.syncAll(), ...(await google.status()) });
   });
   router.delete('/connection', async (_req, res) => {
     await google.disconnect();
-    res.json(google.status());
+    res.json(await google.status());
+  });
+  return router;
+}
+
+// Vercel Cron calls this with `Authorization: Bearer $CRON_SECRET` (Hobby plans: once a day).
+// It also enforces Dial transcript retention, which otherwise only runs when a webhook arrives.
+export function cronRoutes(google, cronAuth, { store, retentionDays = 30 } = {}) {
+  const router = express.Router();
+  router.get('/google-sync', cronAuth, async (_req, res) => {
+    const pruned = store ? await store.pruneDialEvents(retentionDays) : 0;
+    if (!google.configured) return res.json({ skipped: 'Google integration is not configured', prunedDialEvents: pruned });
+    res.json({ results: await google.syncAll(), prunedDialEvents: pruned });
   });
   return router;
 }

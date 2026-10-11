@@ -1,20 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { once } from 'node:events';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
-import { openStore } from '../store.mjs';
+import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
 import { seedDemo } from '../demo.mjs';
 import { describeHeaders, verifyDialSignature } from '../voice/webhooks.mjs';
 
 const config = readConfig({
   DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64), DIAL_WEBHOOK_SECRET: 'w'.repeat(32),
-  DEMO_CALLER_NUMBER: '+14155550123', DEMO_MODE: 'true',
+  DEMO_CALLER_NUMBER: '+14155550123', DEMO_MODE: 'true', DATABASE_URL: TEST_DATABASE_URL,
 });
 
 function sign(body, { secret = config.DIAL_WEBHOOK_SECRET, at = Math.floor(Date.now() / 1000) } = {}) {
@@ -22,20 +19,18 @@ function sign(body, { secret = config.DIAL_WEBHOOK_SECRET, at = Math.floor(Date.
 }
 
 async function fixture(t, overrides = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'speedhacks-dial-'));
-  const store = openStore(dir);
-  seedDemo(store);
+  const store = await testStore(t);
+  await seedDemo(store);
   const events = [];
-  const analytics = { toolCall() {}, rejected() {}, sync() {}, dialEvent: type => events.push(type) };
+  const rejected = [];
+  const analytics = { toolCall() {}, rejected: event => rejected.push(event), sync() {}, dialEvent: type => events.push(type) };
   const server = createApp({ ...config, ...overrides }, store, undefined, analytics).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
   });
-  return { store, events, url: `http://127.0.0.1:${server.address().port}` };
+  return { store, events, rejected, url: `http://127.0.0.1:${server.address().port}` };
 }
 
 test('Dial signatures are verified over the raw body within the replay window', () => {
@@ -65,7 +60,7 @@ test('Dial webhook stores signed events once and rejects forgeries', async t => 
   assert.deepEqual(await again.json(), { received: true, duplicate: true });
   assert.equal((await post('not json', sign('not json'))).status, 400);
   assert.deepEqual(events, ['call.ended']);
-  assert.equal(store.dialEvents()[0].data.callId, 'c1');
+  assert.equal((await store.dialEvents())[0].data.callId, 'c1');
   const off = await fixture(t, { DIAL_WEBHOOK_SECRET: undefined });
   assert.equal((await fetch(`${off.url}/webhooks/dial`, { method: 'POST', body })).status, 503);
 });
@@ -81,8 +76,32 @@ test('Dial header names are configurable and diagnostics redact phone numbers', 
   assert.equal(keys.structuredContent.status, 'supported');
 
   const described = describeHeaders({
-    authorization: 'Bearer secret', 'x-dial-user-number': '+14155550123', 'x-dial-call-id': 'call_abc', accept: '*/*',
+    authorization: 'Bearer secret', 'x-dial-user-number': '+14155550123', 'x-dial-call-id': 'call_abc',
+    'x-dial-direction': 'inbound', 'x-dial-caller-name': 'Jane Doe', accept: '*/*',
   });
-  assert.equal(described, 'accept, authorization, x-dial-call-id=call_abc, x-dial-user-number=…0123');
+  assert.equal(described, 'accept, authorization, x-dial-call-id=<8 chars>, x-dial-caller-name=<8 chars>, ' +
+    'x-dial-direction=inbound, x-dial-user-number=…0123');
+  assert.ok(!described.includes('Jane'));
   assert.ok(!described.includes('secret'));
+});
+
+test('with CALLER_PIN set, spoofed caller ID alone retrieves nothing and guessing locks out', async t => {
+  const { url, rejected } = await fixture(t, { CALLER_PIN: '4821' });
+  const client = new Client({ name: 'pin-check', version: '0.1.0' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`), { requestInit: { headers: {
+    Authorization: `Bearer ${config.DIAL_MCP_TOKEN}`, 'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'inbound',
+  } } }));
+  t.after(() => client.close());
+  const find = pin => client.callTool({ name: 'find_object', arguments: { object: 'keys', ...(pin ? { pin } : {}) } });
+  const missing = await find();
+  assert.equal(missing.isError, true);
+  assert.match(missing.content[0].text, /PIN is required/);
+  assert.equal((await find('4821')).structuredContent.status, 'supported');
+  for (let i = 0; i < 5; i++) assert.match((await find('0000')).content[0].text, /not correct/);
+  const locked = await find('4821');
+  assert.equal(locked.isError, true);
+  assert.match(locked.content[0].text, /Too many wrong PIN attempts/);
+  assert.ok(!JSON.stringify(locked).includes('keys'));
+  assert.deepEqual([...new Set(rejected.map(r => r.reason))], ['pin_missing', 'pin_wrong', 'pin_locked']);
+  assert.ok(!JSON.stringify(rejected).includes('4821'));
 });

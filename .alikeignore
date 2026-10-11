@@ -1,0 +1,4 @@
+# Alike (https://alike.network) captures coding-agent sessions. Keep secrets and personal data out.
+input: DIAL_MCP_TOKEN|CAMERA_TOKEN|ADMIN_TOKEN|GOOGLE_CLIENT_SECRET|GOOGLE_TOKEN_KEY|DIAL_WEBHOOK_SECRET|KEEWANO_API_KEY|refresh_token|sk_live_
+path: .env
+path: data

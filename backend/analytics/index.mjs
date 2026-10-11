@@ -1,5 +1,4 @@
 import { createHmac } from 'node:crypto';
-import { join } from 'node:path';
 import { Keewano } from '@keewano/node-sdk';
 import * as events from './keewano-events.generated.mjs';
 
@@ -31,7 +30,10 @@ export function createAnalytics(config, { sdk = Keewano, log = console } = {}) {
   sdk.init({
     apiKey: config.KEEWANO_API_KEY,
     customEventSet: events.customEventSet,
-    dataDir: join(config.DATA_DIR, 'keewano'),
+    // Serverless disks and instances do not last: keep batches in memory and ship them within
+    // seconds (the SDK has no flush call) so a suspended instance loses little.
+    ...(config.KEEWANO_DATA_DIR ? { dataDir: config.KEEWANO_DATA_DIR }
+      : { persistent: false, flushIntervalMs: 2000, userIdleMs: 2000 }),
     ...(config.KEEWANO_ENDPOINT ? { endpoint: config.KEEWANO_ENDPOINT } : {}),
   }).catch(error => log.error(`Keewano init failed: ${error.message}`));
 

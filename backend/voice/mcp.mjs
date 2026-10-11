@@ -3,12 +3,13 @@ import { scheduleInput, messagesInput, objectInput } from '../../contracts/index
 import { getSchedule, searchMessages } from '../digital/index.mjs';
 import { findObject } from '../physical/index.mjs';
 import { describeDate, localDate } from '../time.mjs';
+import { checkPin, PIN_MESSAGES } from './pin.mjs';
 
 function failure(text) {
   return { isError: true, content: [{ type: 'text', text }] };
 }
 
-export async function handleMcp(req, res, { store, google, analytics, timeZone }, caller) {
+export async function handleMcp(req, res, { store, google, analytics, timeZone, callerPin }, caller) {
   const server = new McpServer({ name: 'speedhacks-memory', version: '0.2.0' });
   // The voice model has no clock; the per-request description anchors relative dates.
   const today = localDate(new Date(), timeZone);
@@ -22,10 +23,15 @@ export async function handleMcp(req, res, { store, google, analytics, timeZone }
   ];
   for (const [name, description, inputSchema, lookup] of tools) {
     server.registerTool(name, { description, inputSchema,
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } }, async args => {
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } }, async ({ pin, ...args }) => {
       if (!caller.authorized) {
         analytics.rejected({ tool: name, reason: caller.reason });
         return failure('Caller not authorized. No personal records were retrieved.');
+      }
+      const pinProblem = await checkPin(store, callerPin, caller.number, pin);
+      if (pinProblem) {
+        analytics.rejected({ tool: name, reason: pinProblem });
+        return failure(PIN_MESSAGES[pinProblem]);
       }
       const started = performance.now();
       try {

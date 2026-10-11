@@ -1,6 +1,6 @@
 import { localDate } from './time.mjs';
 
-export function seedDemo(store, now = new Date(), timeZone = 'UTC') {
+export async function seedDemo(store, now = new Date(), timeZone = 'UTC') {
   const date = localDate(now, timeZone);
   const timestamp = now.toISOString();
   for (const item of [
@@ -11,5 +11,5 @@ export function seedDemo(store, now = new Date(), timeZone = 'UTC') {
     { id: `demo-keys-${date}`, source: 'camera', object: 'keys',
       location: 'beside the blue mug on the desk',
       text: 'DEMO: Keys last seen beside the blue mug on the desk.' },
-  ]) store.put({ ...item, timestamp, demo: true });
+  ]) await store.put({ ...item, timestamp, demo: true });
 }

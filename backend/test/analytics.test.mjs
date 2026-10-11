@@ -1,18 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { once } from 'node:events';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createAnalytics, pseudonym } from '../analytics/index.mjs';
 import { customEventSet } from '../analytics/keewano-events.generated.mjs';
 import { createApp } from '../app.mjs';
-import { openStore } from '../store.mjs';
+import { testStore } from './helpers.mjs';
 import { seedDemo } from '../demo.mjs';
 
 const config = {
-  DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64), DATA_DIR: '/tmp/unused',
+  DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64),
   DEMO_CALLER_NUMBER: '+14155550123', DEMO_MODE: 'true', KEEWANO_API_KEY: 'test-key',
 };
 
@@ -59,20 +56,18 @@ test('generated Keewano schema matches the committed event list', () => {
 });
 
 test('MCP tool calls report counts, latency and provenance but no personal content', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'speedhacks-analytics-'));
-  const store = openStore(dir);
-  seedDemo(store);
+  const store = await testStore(t);
+  await seedDemo(store);
   const sdk = fakeSdk();
-  const analytics = createAnalytics({ ...config, DATA_DIR: dir }, { sdk });
+  const analytics = createAnalytics(config, { sdk });
   const server = createApp(config, store, undefined, analytics).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
   });
-  assert.equal(sdk.options.dataDir, join(dir, 'keewano'));
+  assert.equal(sdk.options.persistent, false);
+  assert.equal(createAnalytics({ ...config, KEEWANO_DATA_DIR: '/var/lib/keewano' }, { sdk }) && sdk.options.dataDir, '/var/lib/keewano');
   assert.equal(sdk.options.customEventSet, customEventSet);
   const connect = async headers => {
     const client = new Client({ name: 'analytics-check', version: '0.1.0' });

@@ -32,12 +32,15 @@ function offsetMs(instant, timeZone) {
   return wall - Math.floor(instant.getTime() / 1000) * 1000;
 }
 
-// UTC instant of local midnight; the second pass settles days that change offset (DST).
+// First instant of the local day. The second pass settles days that change offset (DST);
+// where clocks jump forward at midnight (e.g. America/Santiago) midnight does not exist,
+// so step forward to the first instant that falls on the requested date.
 export function startOfDay(date, timeZone) {
   const [year, month, day] = date.split('-').map(Number);
   const wall = Date.UTC(year, month - 1, day);
   let instant = wall - offsetMs(new Date(wall), timeZone);
   instant = wall - offsetMs(new Date(instant), timeZone);
+  for (let step = 0; step < 4 && localDate(instant, timeZone) < date; step++) instant += 30 * 60_000;
   return new Date(instant);
 }
 
