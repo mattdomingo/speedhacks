@@ -127,19 +127,23 @@ export function sqliteVoiceStore(db) {
       return db.prepare(`UPDATE reminders SET status = 'canceled', updated_at = ?
         WHERE id = ? AND patient_number = ? AND status = 'scheduled'`).run(now, id, patientNumber).changes > 0;
     },
-    claimDueReminders(now, leaseUntil, limit = 5) {
-      return db.prepare(`UPDATE reminders SET status = CASE channel WHEN 'text' THEN 'texting' ELSE 'sending' END,
+    // Reserve before HTTP; expired legacy call leases can only be reconciled.
+    claimDueReminders(now, _leaseUntil, limit = 5) {
+      return db.prepare(`UPDATE reminders SET status = CASE channel WHEN 'text' THEN 'texting' ELSE 'calling' END,
+        outcome = CASE WHEN channel = 'call' THEN CASE WHEN status = 'sending' THEN 'unconfirmed' ELSE 'placing' END ELSE outcome END,
         message_status = CASE channel WHEN 'text' THEN 'unknown' ELSE message_status END,
-        attempts = attempts + 1, lease_until = CASE channel WHEN 'call' THEN ? ELSE NULL END, updated_at = ?
+        attempts = attempts + 1, lease_until = NULL,
+        updated_at = CASE WHEN channel = 'call' AND status = 'sending' THEN updated_at ELSE ? END
         WHERE id IN (SELECT id FROM reminders
-          WHERE (status = 'scheduled' AND due_at <= ?) OR (channel = 'call' AND status = 'sending' AND lease_until < ?)
+          WHERE (status = 'scheduled' AND due_at <= ? AND (lease_until IS NULL OR lease_until < ?))
+            OR (channel = 'call' AND status = 'sending' AND lease_until < ?)
           ORDER BY due_at LIMIT ?) RETURNING *`)
-        .all(leaseUntil, now, now, now, limit);
+        .all(now, now, now, now, limit);
     },
-    updateReminder(id, fromStatus, { status, call_id = null, outcome = null }, now) {
+    updateReminder(id, fromStatus, { status, call_id = null, outcome = null, lease_until = null }, now) {
       return db.prepare(`UPDATE reminders SET status = ?, call_id = COALESCE(?, call_id),
-        outcome = COALESCE(?, outcome), lease_until = NULL, updated_at = ? WHERE id = ? AND status = ?`)
-        .run(status, call_id, outcome, now, id, fromStatus).changes > 0;
+        outcome = COALESCE(?, outcome), lease_until = ?, updated_at = ? WHERE id = ? AND status = ?`)
+        .run(status, call_id, outcome, lease_until, now, id, fromStatus).changes > 0;
     },
     claimReminderFallback(id, callStatus, now) {
       return db.prepare(`UPDATE reminders SET status = 'missed', outcome = ?, message_status = 'unknown',

@@ -109,15 +109,16 @@ Failure injection, one dependency at a time:
   - Isolation is enforced by handing every MCP request a store scoped to the caller. The connected Google account is used only for the primary patient.
   - One database still holds everyone, so this is a demo restriction, not per-user storage.
 - **Dial writes are never retried blindly.** Dial's docs contradict each other on whether `POST /calls` supports `Idempotency-Key`. The key is still sent, but never relied on.
-  - Ambiguous failures (timeout, dropped connection, 5xx without a JSON body, an idempotency 409) are looked up via `GET /calls` / `GET /messages`.
+  - Ambiguous failures (timeout, dropped connection, any 5xx response, an idempotency 409) are looked up via `GET /calls` / `GET /messages`.
   - An unconfirmed call is parked (status `calling`, no call id), re-checked each minute, and after 10 minutes settled with the one fallback text. A text is a different channel, not a second call.
-  - Definite refusals (429, 5xx with an error body) are looked up first, then retried as before.
+  - Definite rate-limit refusals (429) are looked up first, then retried after two minutes, up to three attempts.
+  - Calls are reserved in the database before HTTP. Regression tests close and reopen the store after crashes before the request and after provider acceptance, and recover expired leases from older code; none places another call. A crash before sending can therefore miss the call and produce one fallback text after ten minutes.
 - **Webhooks.** The event id must match `X-Dial-Event-ID` when that header is present. Side effects run until one delivery completes them (new `dial_event_handled` table); all writes are keyed by Dial ids with insert-or-ignore, so even concurrent duplicates are safe. Without that table (before `db:init`), every delivery runs its idempotent handlers.
 - **`notify_caregiver`.** No PIN, so an emergency is never blocked. Rate-limited to 3 per hour per patient in the database (with an advisory lock on Postgres). Never contacts 911. The persona tells the caller to call 911 first.
 - **Caregiver summary.** Runs as a daily Vercel cron at 02:00 UTC, which is 7 PM Pacific (6 PM in winter), before quiet hours. Each summary is claimed in the database before sending. A failed or ambiguous send isn't retried that day, so it can never become two texts.
 - **Health.** Public, cached for 60 s, with an in-flight probe shared. The only paid-API read is a one-word Voyage embed, at most once a minute, and only when `VOYAGE_API_KEY` is set. Claude is checked via the models list (no tokens) and Dial via `GET /account`.
 - **Demo seed.** Matches the iOS story (keys, car, Priya, Sam, Maya), adds a caregiver pill note, and adds a synthetic patient B (+15555550199, son Diego).
-  - Seeded camera records (keys and car) are visible by phone only when `DEMO_MODE=true`; calendar, email, people and notes are always visible.
+  - Seeded camera, calendar, email, people and caregiver-note records are visible by phone only when `DEMO_MODE=true`, including fixtures retained in an older database. Live records remain available.
   - Ids are keyed by day, so re-runs are idempotent, but each new day adds a fresh copy of the dated records.
 - **New tables.** Run `npm run db:init` before using these features on Postgres: `caregiver_message`, `dial_event_handled`.
 

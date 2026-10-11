@@ -33,9 +33,9 @@ Expected / Actual:
 Root cause: `reminders.dispatch` treated every non-4xx failure as safe to retry. It trusted an idempotency key that one Dial doc page denies exists.
 Fix:
 - `backend/voice/dial.mjs` classifies failures as `ambiguous`, `permanent` or definite, and adds `listCalls`, `listMessages`, `findPlacedCall` and `findSentText`.
-- `backend/voice/reminders.mjs` looks the call up first and adopts it if found. Otherwise it parks the reminder as an unconfirmed call (no call id), re-checks each minute, and after 10 minutes settles with the one fallback text, never redialing. Definite refusals (429, 5xx with a body) are looked up before the existing bounded retry.
-- `backend/voice/store-*.mjs` adds `unconfirmedCalls()`; `unsettledCalls()` now skips rows without a call id.
-- Tests: `backend/test/dial-calls.test.mjs` ("a timeout on POST /calls never produces a second call", 20 dispatch runs, both cases); the old idempotency test in `reminders.test.mjs` was rewritten.
+- `backend/voice/reminders.mjs` looks the call up first and adopts it if found. Otherwise it parks the reminder as an unconfirmed call (no call id), re-checks each minute, and after 10 minutes settles with the one fallback text, never redialing. A definite rate-limit refusal (429) is looked up before a bounded retry with two-minute backoff. All 5xx responses remain ambiguous, including JSON errors returned after a call was accepted.
+- `backend/voice/store-*.mjs` reserves calls before HTTP and adds `unconfirmedCalls()`; `unsettledCalls()` skips rows without a call id. Restart recovery and expired leases from older deployments only reconcile, never place another call. A crash before sending may therefore miss the call and eventually produce one fallback text.
+- Tests: `backend/test/dial-calls.test.mjs` covers timeouts, JSON server errors, restart before/after call acceptance and legacy expired leases; `reminder-storage.test.mjs` covers overlapping claims for both adapters. The bounded retry test in `reminders.test.mjs` uses a definite 429 refusal.
 
 Status: Fixed + re-tested
 

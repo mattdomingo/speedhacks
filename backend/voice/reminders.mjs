@@ -67,7 +67,7 @@ function classify(error) {
   const status = error.status;
   return {
     permanent: error.permanent ?? (status >= 400 && status < 500 && status !== 429 && status !== 409),
-    ambiguous: error.ambiguous ?? (status === undefined || status === 409),
+    ambiguous: error.ambiguous ?? (status === undefined || status === 409 || status >= 500),
   };
 }
 
@@ -183,10 +183,8 @@ export function createReminders(config, store, { dial = null, now = Date.now, ti
       return { status: 'canceled', id };
     },
 
-    // Called every minute by Vercel Cron (/cron/dial-reminders). Each claim holds a database lease.
-    // Texts are reserved once, outside lease reclamation, before the request can reach Dial (DEC-020).
-    // A call that may have reached Dial (timeout, dropped connection) is never dialed again: it is looked up
-    // first, and one that cannot be confirmed is parked and reconciled later (DEC-022).
+    // Reserve calls and texts before HTTP, so crashes and timeouts cannot turn into a second send.
+    // Only a definite call refusal can be rescheduled; legacy expired leases are reconciled (DEC-022).
     async dispatch() {
       requireDial();
       const zone = await timeZone();
@@ -204,19 +202,20 @@ export function createReminders(config, store, { dial = null, now = Date.now, ti
           }
           continue;
         }
+        if (reminder.outcome === 'unconfirmed') { result.unconfirmed++; continue; }
         const instruction = callInstruction(reminder, zone);
         try {
           const call = await dial.placeCall({
             to: reminder.patient_number, from, instruction,
             idempotencyKey: `reminder-${reminder.id}`, maxSeconds: CALL_SECONDS,
           });
-          await store.updateReminder(reminder.id, 'sending', { status: 'calling', call_id: call.id }, iso(now()));
+          await store.updateReminder(reminder.id, 'calling', { status: 'calling', call_id: call.id, outcome: 'placed' }, iso(now()));
           result.called++;
         } catch (error) {
           console.error('Reminder call failed:', safeMessage(error));
           const { permanent, ambiguous } = classify(error);
           if (permanent) {
-            await store.updateReminder(reminder.id, 'sending', { status: 'failed', outcome: safeMessage(error) }, iso(now()));
+            await store.updateReminder(reminder.id, 'calling', { status: 'failed', outcome: safeMessage(error) }, iso(now()));
             result.failed++;
             continue;
           }
@@ -228,17 +227,19 @@ export function createReminders(config, store, { dial = null, now = Date.now, ti
             console.error('Reminder call lookup failed:', safeMessage(lookupError));
           }
           if (placed) {
-            await store.updateReminder(reminder.id, 'sending', { status: 'calling', call_id: placed.id }, iso(now()));
+            await store.updateReminder(reminder.id, 'calling', { status: 'calling', call_id: placed.id, outcome: 'placed' }, iso(now()));
             result.called++;
           } else if (ambiguous) {
             // It may still have been placed: park it as an unconfirmed call (no call id) for reconciliation.
-            await store.updateReminder(reminder.id, 'sending', { status: 'calling', outcome: 'unconfirmed' }, iso(now()));
+            await store.updateReminder(reminder.id, 'calling', { status: 'calling', outcome: 'unconfirmed' }, iso(now()));
             result.unconfirmed++;
           } else {
-            // A definite refusal (429, 5xx with an error body) placed nothing; the lease expires and the claim retries.
-            if (reminder.attempts >= MAX_CALL_ATTEMPTS) {
-              await store.updateReminder(reminder.id, 'sending', { status: 'failed', outcome: safeMessage(error) }, iso(now()));
-            }
+            // A definite refusal (429) can retry after backoff; never retry a server error or lost response.
+            const exhausted = reminder.attempts >= MAX_CALL_ATTEMPTS;
+            await store.updateReminder(reminder.id, 'calling', {
+              status: exhausted ? 'failed' : 'scheduled', outcome: safeMessage(error),
+              lease_until: exhausted ? null : iso(now() + LEASE_MS),
+            }, iso(now()));
             result.failed++;
           }
         }

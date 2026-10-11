@@ -273,7 +273,7 @@ test('definite transient refusals look the call up, then retry with the same key
   const { url, dial, clock } = await fixture(t);
   const client = await connect(t, url, onCall());
   await client.callTool({ name: 'set_reminder', arguments: { text: 'Doctor at 3', in_minutes: 1 } });
-  dial.failCall = Object.assign(new Error('Dial POST calls failed with 503 (unavailable)'), { status: 503, ambiguous: false });
+  dial.failCall = Object.assign(new Error('Dial POST calls failed with 429'), { status: 429, ambiguous: false });
   clock.now += 60_000;
   await dispatch(url);
   await dispatch(url);

@@ -103,21 +103,23 @@ export function postgresVoiceStore(pool) {
         WHERE id = $2 AND patient_number = $3 AND status = 'scheduled'`, [now, id, patientNumber]);
       return result.rowCount > 0;
     },
-    // SKIP LOCKED lets overlapping cron runs claim disjoint reminders.
-    async claimDueReminders(now, leaseUntil, limit = 5) {
-      const { rows } = await pool.query(`UPDATE reminders SET status = CASE channel WHEN 'text' THEN 'texting' ELSE 'sending' END,
+    // Reserve before HTTP; expired legacy call leases can only be reconciled. SKIP LOCKED keeps claims disjoint.
+    async claimDueReminders(now, _leaseUntil, limit = 5) {
+      const { rows } = await pool.query(`UPDATE reminders SET status = CASE channel WHEN 'text' THEN 'texting' ELSE 'calling' END,
+        outcome = CASE WHEN channel = 'call' THEN CASE WHEN status = 'sending' THEN 'unconfirmed' ELSE 'placing' END ELSE outcome END,
         message_status = CASE channel WHEN 'text' THEN 'unknown' ELSE message_status END, attempts = attempts + 1,
-        lease_until = CASE channel WHEN 'call' THEN $2 ELSE NULL END, updated_at = $1
+        lease_until = NULL, updated_at = CASE WHEN channel = 'call' AND status = 'sending' THEN updated_at ELSE $1 END
         WHERE id IN (SELECT id FROM reminders
-          WHERE (status = 'scheduled' AND due_at <= $1) OR (channel = 'call' AND status = 'sending' AND lease_until < $1)
-          ORDER BY due_at LIMIT $3 FOR UPDATE SKIP LOCKED)
-        RETURNING *`, [now, leaseUntil, limit]);
+          WHERE (status = 'scheduled' AND due_at <= $1 AND (lease_until IS NULL OR lease_until < $1))
+            OR (channel = 'call' AND status = 'sending' AND lease_until < $1)
+          ORDER BY due_at LIMIT $2 FOR UPDATE SKIP LOCKED)
+        RETURNING *`, [now, limit]);
       return rows;
     },
-    async updateReminder(id, fromStatus, { status, call_id = null, outcome = null }, now) {
+    async updateReminder(id, fromStatus, { status, call_id = null, outcome = null, lease_until = null }, now) {
       const result = await pool.query(`UPDATE reminders SET status = $1, call_id = COALESCE($2, call_id),
-        outcome = COALESCE($3, outcome), lease_until = NULL, updated_at = $4 WHERE id = $5 AND status = $6`,
-      [status, call_id, outcome, now, id, fromStatus]);
+        outcome = COALESCE($3, outcome), lease_until = $7, updated_at = $4 WHERE id = $5 AND status = $6`,
+      [status, call_id, outcome, now, id, fromStatus, lease_until]);
       return result.rowCount > 0;
     },
     async claimReminderFallback(id, callStatus, now) {

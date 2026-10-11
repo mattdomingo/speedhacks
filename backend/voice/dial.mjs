@@ -8,10 +8,10 @@ function dialError(message, props) {
 //
 // Dial writes are not reliably idempotent (its call guide says a retried POST /calls places a
 // second call), so a failed write is classified rather than retried here:
-// - `ambiguous`: no definite answer (timeout, dropped connection, 5xx without a JSON body, or an
+// - `ambiguous`: no definite answer (timeout, dropped connection, 5xx, or an
 //   idempotency 409). The call or text may exist; callers must look it up before acting again.
 // - `permanent`: 4xx other than 429 (e.g. 409 calling_disabled, 400, 402). Retrying will not help.
-// - otherwise a definite transient refusal (429, 5xx with an error body): nothing was placed.
+// - otherwise a definite transient refusal (429): nothing was placed.
 // allowedNumbers (DIAL_ALLOWED_NUMBERS) refuses any other destination before a request is made.
 export function createDial(apiKey, fetchImpl = fetch, { allowedNumbers, timeoutMs = 15_000 } = {}) {
   const allowed = allowedNumbers?.length ? new Set(allowedNumbers) : null;
@@ -45,7 +45,7 @@ export function createDial(apiKey, fetchImpl = fetch, { allowedNumbers, timeoutM
       const stillProcessing = status === 409 && !/calling_disabled|tendlc/.test(`${code} ${detail}`);
       throw dialError(`Dial ${method} ${resource} failed with ${status}${code ? ` (${code})` : ''}`, {
         status, code,
-        ambiguous: method !== 'GET' && (stillProcessing || (status >= 500 && payload === undefined)),
+        ambiguous: method !== 'GET' && (stillProcessing || status >= 500),
         permanent: status >= 400 && status < 500 && status !== 429 && !stillProcessing,
       });
     }

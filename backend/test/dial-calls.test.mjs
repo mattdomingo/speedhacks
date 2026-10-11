@@ -5,6 +5,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
 import { createDial } from '../voice/dial.mjs';
+import { createReminders } from '../voice/reminders.mjs';
 import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
 
 const PATIENT = '+14155550123';
@@ -58,6 +59,9 @@ function fakeDialApi(clock = { now: Date.now() }) {
       case 'placed-then-timeout':
         api.placed.push(call);
         return hang(init.signal);
+      case 'placed-then-error':
+        api.placed.push(call);
+        return Response.json({ error: 'backend_error' }, { status: 503 });
       case 'timeout':
         return hang(init.signal);
       case 'calling_disabled':
@@ -116,6 +120,8 @@ test('the Dial client classifies failures: timeouts are ambiguous, 409 calling_d
   assert.deepEqual([invalid.status, invalid.permanent, invalid.ambiguous], [400, true, false]);
   const gateway = await attempt('gateway');
   assert.deepEqual([gateway.status, gateway.permanent, gateway.ambiguous], [502, false, true]);
+  const jsonError = await attempt('placed-then-error');
+  assert.deepEqual([jsonError.status, jsonError.permanent, jsonError.ambiguous], [503, false, true]);
 });
 
 test('DIAL_ALLOWED_NUMBERS refuses every other destination before any request is made', async () => {
@@ -132,8 +138,8 @@ test('DIAL_ALLOWED_NUMBERS refuses every other destination before any request is
     DIAL_ALLOWED_NUMBERS: '5039290000' }), /E\.164/);
 });
 
-test('a timeout on POST /calls never produces a second call, whether or not Dial placed it', async t => {
-  for (const mode of ['placed-then-timeout', 'timeout']) {
+test('an ambiguous POST /calls never produces a second call, whether or not Dial placed it', async t => {
+  for (const mode of ['placed-then-timeout', 'timeout', 'placed-then-error']) {
     const { api, clock, client, dispatch } = await fixture(t);
     await client.callTool({ name: 'set_reminder', arguments: { text: 'Doctor at 3', in_minutes: 1 } });
     api.onCall = mode;
@@ -145,7 +151,7 @@ test('a timeout on POST /calls never produces a second call, whether or not Dial
       await dispatch();
     }
     assert.equal(callPosts(api).length, 1, mode);
-    if (mode === 'placed-then-timeout') {
+    if (mode !== 'timeout') {
       // The call Dial did place was found by listing calls and adopted.
       assert.equal(first.called, 1);
       assert.ok(api.gets.includes('/calls'));
@@ -170,6 +176,37 @@ test('409 calling_disabled and 400 are surfaced once and never retried', async t
       await dispatch();
     }
     assert.equal(callPosts(api).length, 1, mode);
+  }
+});
+
+test('restart reconciles reserved calls and legacy expired leases without another placement', async t => {
+  for (const crash of ['before-request', 'accepted', 'legacy-accepted']) {
+    const { api, clock, client, store } = await fixture(t);
+    await client.callTool({ name: 'set_reminder', arguments: { text: 'Review reminder', in_minutes: 1 } });
+    clock.now += 60_000;
+    const stamp = new Date(clock.now).toISOString();
+    const lease = new Date(clock.now + 120_000).toISOString();
+    const [claimed] = await store.claimDueReminders(stamp, lease);
+    if (crash === 'legacy-accepted') {
+      await store.sql(store.adapter === 'sqlite'
+        ? "UPDATE reminders SET status = 'sending', lease_until = ? WHERE id = ?"
+        : "UPDATE reminders SET status = 'sending', lease_until = $1 WHERE id = $2", [lease, claimed.id]);
+    }
+    if (crash !== 'before-request') api.placed.push({ id: 'accepted-before-crash', to: PATIENT, from: STEPH,
+      direction: 'outbound', instruction: '<reminder>Review reminder</reminder>', createdAt: stamp,
+      status: { state: 'Queued' } });
+    // No result was saved: recover through a fresh store connection and dispatcher.
+    const reopened = store.reopen();
+    t.after(() => reopened.close());
+    const recovered = createReminders(config, reopened, { dial: createDial('sk_test', api.fetch), now: () => clock.now });
+    clock.now += 121_000;
+    await recovered.dispatch();
+    assert.equal(callPosts(api).length, 0, crash);
+    if (crash !== 'before-request') assert.equal((await reopened.reminderByCall('accepted-before-crash')).id, claimed.id);
+    clock.now += 20 * 60_000;
+    await recovered.dispatch();
+    assert.equal(callPosts(api).length, 0, `${crash}: later dispatch cannot redial`);
+    assert.equal(api.texts.length, crash === 'before-request' ? 1 : 0);
   }
 });
 
