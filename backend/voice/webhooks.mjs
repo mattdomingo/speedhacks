@@ -1,8 +1,8 @@
-import express from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
 const TOLERANCE_SECONDS = 300;
+const MAX_BYTES = 1_000_000;
 const eventSchema = z.object({ id: z.string().min(1).max(200), type: z.string().min(1).max(100) }).passthrough();
 
 // Dial signs deliveries as `X-Dial-Signature: t=<unix seconds>,v1=<hex>`, where
@@ -23,10 +23,27 @@ export function verifyDialSignature(secret, header, rawBody, now = Date.now()) {
     timingSafeEqual(Buffer.from(signature, 'hex'), expected));
 }
 
+// The signature covers the exact bytes, so the body is read from the stream here rather than
+// through a body parser: on Vercel the runtime consumes the request first (body parsers then
+// skip it) and replays the original bytes on the stream's data/end events.
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BYTES) reject(Object.assign(new Error('Payload too large'), { status: 413 }));
+      else chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
 export function dialWebhook(config, store, analytics) {
-  return [express.raw({ type: () => true, limit: '1mb' }), async (req, res) => {
+  return async (req, res) => {
     if (!config.DIAL_WEBHOOK_SECRET) return res.status(503).json({ error: 'Endpoint is not configured' });
-    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const body = await readRawBody(req);
     if (!verifyDialSignature(config.DIAL_WEBHOOK_SECRET, req.get('x-dial-signature'), body)) {
       return res.status(401).json({ error: 'Invalid signature' });
     }
@@ -40,7 +57,7 @@ export function dialWebhook(config, store, analytics) {
     const fresh = await store.recordDialEvent(event, config.DIAL_EVENT_RETENTION_DAYS ?? 30);
     if (fresh) analytics.dialEvent(event.type);
     res.json({ received: true, duplicate: !fresh });
-  }];
+  };
 }
 
 const PHONE = /^\+?\d{7,15}$/;

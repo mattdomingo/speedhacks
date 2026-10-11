@@ -1,5 +1,11 @@
-// Vercel entry point. Vercel detects this exported Express app (zero-config Express) and
-// deploys it as a single function; locally use `npm start` (backend/index.mjs) instead.
+// Vercel entry point. Vercel's zero-config Express support deploys the app exported here as a
+// single function; it only recognizes an entry file that imports express itself.
+// Locally use `npm start` (backend/index.mjs) instead.
+import express from 'express';
 import { createRuntime } from './backend/runtime.mjs';
 
-export default createRuntime().app;
+const app = express();
+app.disable('x-powered-by');
+app.use(createRuntime().app);
+
+export default app;

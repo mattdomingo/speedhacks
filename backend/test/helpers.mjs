@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { PassThrough } from 'node:stream';
 import pg from 'pg';
 import { PGlite } from '@electric-sql/pglite';
 import { pglite, postgres } from '../db.mjs';
@@ -42,3 +43,32 @@ export async function testStore(t) {
 }
 
 export const TEST_DATABASE_URL = 'postgres://test:test@127.0.0.1:5432/test';
+
+// Mimics Vercel's Node.js request helpers (shouldAddHelpers): the runtime reads the whole body
+// before the app runs, replays it on data/end, and exposes a lazily parsed req.body. Express body
+// parsers then see a finished request and skip it.
+export function vercelHelpers(app) {
+  return async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks);
+    const replay = new PassThrough();
+    replay.end(body);
+    req.on = req.addListener = ((on, original) => (name, cb) =>
+      (name === 'data' || name === 'end' ? on(name, cb) : original(name, cb)))(replay.on.bind(replay), req.on.bind(req));
+    req.read = replay.read.bind(replay);
+    let parsed;
+    Object.defineProperty(req, 'body', {
+      configurable: true, enumerable: true,
+      get() {
+        if (parsed === undefined && /json/.test(req.headers['content-type'] ?? '')) {
+          try { parsed = body.length ? JSON.parse(body.toString()) : {}; }
+          catch { throw Object.assign(new Error('Invalid JSON'), { statusCode: 400 }); }
+        }
+        return parsed;
+      },
+      set(value) { parsed = value; },
+    });
+    app(req, res);
+  };
+}

@@ -5,7 +5,8 @@ import { once } from 'node:events';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
-import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
+import { createServer } from 'node:http';
+import { testStore, TEST_DATABASE_URL, vercelHelpers } from './helpers.mjs';
 import { seedDemo } from '../demo.mjs';
 import { describeHeaders, verifyDialSignature } from '../voice/webhooks.mjs';
 
@@ -104,4 +105,23 @@ test('with CALLER_PIN set, spoofed caller ID alone retrieves nothing and guessin
   assert.ok(!JSON.stringify(locked).includes('keys'));
   assert.deepEqual([...new Set(rejected.map(r => r.reason))], ['pin_missing', 'pin_wrong', 'pin_locked']);
   assert.ok(!JSON.stringify(rejected).includes('4821'));
+});
+
+test('behind Vercel request helpers, signed webhooks and JSON routes still work', async t => {
+  const { store } = await fixture(t);
+  const app = createApp(config, store, undefined, { toolCall() {}, rejected() {}, sync() {}, dialEvent() {} });
+  const server = createServer(vercelHelpers(app)).listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const body = JSON.stringify({ id: 'evt_vercel', type: 'call.transcribed' });
+  const hook = await fetch(`${url}/webhooks/dial`, { method: 'POST', body,
+    headers: { 'Content-Type': 'application/json', 'X-Dial-Signature': sign(body) } });
+  assert.deepEqual(await hook.json(), { received: true, duplicate: false });
+  const camera = { Authorization: `Bearer ${config.CAMERA_TOKEN}`, 'Content-Type': 'application/json' };
+  const observation = await fetch(`${url}/camera/observations`, { method: 'POST', headers: camera,
+    body: JSON.stringify({ object: 'wallet', location: 'hall table', timestamp: '2026-01-01T00:00:00Z' }) });
+  assert.equal(observation.status, 201);
+  const malformed = await fetch(`${url}/camera/observations`, { method: 'POST', headers: camera, body: '{not json' });
+  assert.equal(malformed.status, 400);
 });

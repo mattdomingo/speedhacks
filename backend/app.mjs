@@ -35,7 +35,7 @@ export function createApp(config, store, google = createGoogle({ config, store }
     res.status(db ? 200 : 503).json({ ok: db, demo: config.DEMO_MODE === 'true' });
   });
   // Signed by Dial over the raw body, so it is mounted before the JSON parser.
-  app.post('/webhooks/dial', ...dialWebhook(config, store, analytics));
+  app.post('/webhooks/dial', dialWebhook(config, store, analytics));
   app.use('/mcp', bearer(config.DIAL_MCP_TOKEN));
   app.use('/camera', bearer(config.CAMERA_TOKEN));
   app.use(express.json({ limit: '1mb' }));
@@ -77,7 +77,8 @@ export function createApp(config, store, google = createGoogle({ config, store }
   });
   app.use((error, _req, res, _next) => {
     if (error.name === 'ZodError') return res.status(400).json({ error: 'Invalid request', issues: error.issues });
-    const status = error.status || 500;
+    // Vercel's request helpers report malformed bodies with statusCode instead of status.
+    const status = error.status || error.statusCode || 500;
     if (status === 500) console.error('Request failed:', error.message);
     res.status(status).json({ error: status === 500 ? 'Internal server error' : error.message });
   });
