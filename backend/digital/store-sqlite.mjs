@@ -3,7 +3,8 @@
 // `origin` field, so the shared evidence table is unchanged.
 import { SCOPES } from './google.mjs';
 
-const scopeFor = origin => SCOPES[origin === 'google-calendar' ? 'calendar' : 'gmail'];
+// 'google-calendar' -> the calendar read scope, and so on for each source.
+const scopeFor = origin => SCOPES[origin.replace(/^google-/, '')];
 export function sqliteDigitalStore(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS google_connection (
@@ -23,6 +24,9 @@ export function sqliteDigitalStore(db) {
       name TEXT PRIMARY KEY, last_success TEXT, last_attempt TEXT NOT NULL, last_error TEXT,
       item_count INTEGER NOT NULL DEFAULT 0, window_from TEXT, window_to TEXT
     );
+    CREATE TABLE IF NOT EXISTS google_state (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
   `);
   // Token-endpoint origin a connection was made against (DEC-015); NULL means real Google.
   if (!db.prepare('PRAGMA table_info(google_connection)').all().some(column => column.name === 'token_origin')) {
@@ -30,6 +34,8 @@ export function sqliteDigitalStore(db) {
   }
   const insert = db.prepare(`INSERT INTO evidence (id, source, timestamp, payload) VALUES (?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET source=excluded.source, timestamp=excluded.timestamp, payload=excluded.payload`);
+  const putState = db.prepare(`INSERT INTO google_state (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`);
 
   function transaction(work) {
     db.exec('BEGIN IMMEDIATE');
@@ -66,6 +72,8 @@ export function sqliteDigitalStore(db) {
     db.prepare("DELETE FROM evidence WHERE json_extract(payload, '$.origin') LIKE 'google-%'").run();
     db.prepare("DELETE FROM sync_state WHERE name LIKE 'google-%'").run();
     db.prepare('DELETE FROM oauth_state').run();
+    // Sync cursors, channels and cached facts belong to the connection; settings outlive it.
+    db.prepare("DELETE FROM google_state WHERE key NOT LIKE 'setting:%'").run();
   }
 
   function googleWrite(origin, before, records, generation) {
@@ -84,6 +92,13 @@ export function sqliteDigitalStore(db) {
     },
     upsertOrigin(origin, records, generation) {
       return googleWrite(origin, () => {}, records, generation);
+    },
+    // Incremental changes: upsert some records and delete others by id, atomically.
+    patchOrigin(origin, records, removeIds, generation) {
+      return googleWrite(origin, () => {
+        const remove = db.prepare("DELETE FROM evidence WHERE id = ? AND json_extract(payload, '$.origin') = ?");
+        for (const id of removeIds) remove.run(id, origin);
+      }, records, generation);
     },
     // A live single-day lookup is authoritative for that day.
     replaceCalendarDay(date, records, generation) {
@@ -154,6 +169,23 @@ export function sqliteDigitalStore(db) {
             window_to=CASE WHEN excluded.last_error IS NULL THEN excluded.window_to ELSE sync_state.window_to END`)
           .run(name, error ? null : now, now, error ?? null, count ?? 0, window?.from ?? null, window?.to ?? null);
       });
+    },
+    // Connection-scoped Google state (sync tokens, push channels, extracted Gmail facts, created
+    // events, picker sessions) under key prefixes; 'setting:' keys hold user settings.
+    googleState(prefix) {
+      return db.prepare('SELECT key, value FROM google_state WHERE substr(key, 1, ?) = ? ORDER BY key').all(prefix.length, prefix)
+        .map(row => ({ key: row.key, value: JSON.parse(row.value) }));
+    },
+    saveGoogleState(generation, scope, { put = [], remove = [] } = {}) {
+      return withConnection(generation, scope, () => {
+        const now = new Date().toISOString();
+        const drop = db.prepare('DELETE FROM google_state WHERE key = ?');
+        for (const key of remove) drop.run(key);
+        for (const { key, value } of put) putState.run(key, JSON.stringify(value), now);
+      });
+    },
+    saveGoogleSetting(name, value) {
+      putState.run(`setting:${name}`, JSON.stringify(value), new Date().toISOString());
     },
     syncState(name) {
       return db.prepare('SELECT * FROM sync_state WHERE (? IS NULL OR name = ?) ORDER BY name').all(name ?? null, name ?? null)

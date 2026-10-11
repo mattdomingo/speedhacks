@@ -53,6 +53,15 @@ CREATE TABLE IF NOT EXISTS sync_state (
   window_from TEXT,
   window_to TEXT
 );
+-- Connection-scoped Google state keyed by prefix: calendar sync tokens ('calendar:'), push
+-- channels ('channel:'), facts extracted from Gmail ('gmail:', never message bodies), events Steph
+-- created ('created:') and Photos Picker sessions ('picker:'). Cleared with the connection, except
+-- user settings ('setting:').
+CREATE TABLE IF NOT EXISTS google_state (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 -- Signed Dial webhook events (pruned after DIAL_EVENT_RETENTION_DAYS) and caller-PIN lockouts.
 CREATE TABLE IF NOT EXISTS dial_event (
   id TEXT PRIMARY KEY,

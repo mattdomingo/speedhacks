@@ -2,7 +2,8 @@
 // store-sqlite.mjs; keep both aligned. Tables come from backend/schema.sql (npm run db:init).
 import { SCOPES } from './google.mjs';
 
-const scopeFor = origin => SCOPES[origin === 'google-calendar' ? 'calendar' : 'gmail'];
+// 'google-calendar' -> the calendar read scope, and so on for each source.
+const scopeFor = origin => SCOPES[origin.replace(/^google-/, '')];
 export function postgresDigitalStore(pool) {
   async function transaction(work) {
     const client = await pool.connect();
@@ -42,6 +43,8 @@ export function postgresDigitalStore(pool) {
     await client.query("DELETE FROM evidence WHERE payload->>'origin' LIKE 'google-%'");
     await client.query("DELETE FROM sync_state WHERE name LIKE 'google-%'");
     await client.query('DELETE FROM oauth_state');
+    // Sync cursors, channels and cached facts belong to the connection; settings outlive it.
+    await client.query("DELETE FROM google_state WHERE key NOT LIKE 'setting:%'");
   }
 
   function googleWrite(origin, before, records, generation) {
@@ -62,6 +65,11 @@ export function postgresDigitalStore(pool) {
     },
     upsertOrigin(origin, records, generation) {
       return googleWrite(origin, async () => {}, records, generation);
+    },
+    // Incremental changes: upsert some records and delete others by id, atomically.
+    patchOrigin(origin, records, removeIds, generation) {
+      return googleWrite(origin, client => client.query("DELETE FROM evidence WHERE id = ANY($1::text[]) AND payload->>'origin' = $2",
+        [removeIds, origin]), records, generation);
     },
     replaceCalendarDay(date, records, generation) {
       return googleWrite('google-calendar', client => client.query(`DELETE FROM evidence
@@ -131,6 +139,26 @@ export function postgresDigitalStore(pool) {
           window_from = CASE WHEN excluded.last_error IS NULL THEN excluded.window_from ELSE s.window_from END,
           window_to = CASE WHEN excluded.last_error IS NULL THEN excluded.window_to ELSE s.window_to END`,
       [name, error ?? null, count ?? null, window?.from ?? null, window?.to ?? null]));
+    },
+    // Connection-scoped Google state (sync tokens, push channels, extracted Gmail facts, created
+    // events, picker sessions) under key prefixes; 'setting:' keys hold user settings.
+    async googleState(prefix) {
+      const { rows } = await pool.query('SELECT key, value FROM google_state WHERE left(key, length($1)) = $1 ORDER BY key', [prefix]);
+      return rows;
+    },
+    saveGoogleState(generation, scope, { put = [], remove = [] } = {}) {
+      return withConnection(generation, scope, async client => {
+        if (remove.length) await client.query('DELETE FROM google_state WHERE key = ANY($1::text[])', [remove]);
+        if (put.length) {
+          await client.query(`INSERT INTO google_state (key, value)
+            SELECT e->>'key', e->'value' FROM jsonb_array_elements($1::jsonb) AS e
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = now()`, [JSON.stringify(put)]);
+        }
+      });
+    },
+    async saveGoogleSetting(name, value) {
+      await pool.query(`INSERT INTO google_state (key, value) VALUES ($1, $2::jsonb)
+        ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = now()`, [`setting:${name}`, JSON.stringify(value)]);
     },
     async syncState(name) {
       const { rows } = await pool.query(`SELECT *, EXTRACT(EPOCH FROM now() - last_success)::float AS age_seconds
