@@ -1,0 +1,14 @@
+// Shared build settings for Recall. Copy Local.xcconfig.example to
+// Local.xcconfig (gitignored) to set your team, bundle ID and backend secret.
+
+RECALL_BUNDLE_ID = com.speedhacks.recall
+RECALL_TEAM =
+RECALL_ENTITLEMENTS = Recall/Recall.entitlements
+
+// xcconfig treats "//" as a comment, so the URL is split with $() .
+RECALL_API_BASE_URL = https:/$()/recall-kappa-nine.vercel.app
+// Demo restriction: a shared app secret that ships in the binary. Leave empty
+// to run fully on-device (Steph answers from local memories only).
+RECALL_APP_TOKEN =
+
+#include? "Local.xcconfig"
