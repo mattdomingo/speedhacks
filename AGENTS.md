@@ -131,6 +131,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** Engineers and agents need the same reviewable record regardless of tooling. A private chat or Alike-only decision is insufficient for a shared repository. Keep this file concise and preserve superseded decisions.
 - **Source / validation:** The request to create and push an engineering `AGENTS.md`; documentation references and diff checked in the introducing commit.
 
+### DEC-009 — Test object memory directly through MCP
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 3; the project owner selected MCP-only testing while phone provisioning is pending.
+- **Decision:** Exercise camera uploads and `find_object` through the existing MCP smoke client, using a reserved test identity configured in both the backend and client. Keep the bearer token and inbound caller checks; no provisioned phone number or Dial account is required for this test.
+- **Reason and consequences:** Camera and memory integration can be checked before voice integration is ready. This proves neither a real call nor physical recognition accuracy; those retain their separate acceptance checks. Use live mode to exclude synthetic object evidence.
+- **Sources / validation:** [MCP-only testing and production checks](https://github.com/mattdomingo/speedhacks/pull/3), [smoke instructions](docs/object-memory.md#mcp-smoke-test), [dated validation](docs/object-memory-validation.md).
+
 Copy this template for the next decision:
 
 ```markdown
