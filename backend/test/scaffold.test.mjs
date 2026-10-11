@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -8,6 +9,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createApp } from '../app.mjs';
 import { readConfig } from '../config.mjs';
 import { openStore } from '../store.mjs';
+import { openPostgresStore } from '../postgres.mjs';
+import { Client as PostgresClient } from 'pg';
 import { seedDemo } from '../demo.mjs';
 import { findObject } from '../physical/index.mjs';
 
@@ -17,17 +20,35 @@ const config = {
 };
 
 async function fixture(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'speedhacks-'));
-  const store = openStore(dir);
+  let reopen;
+  if (process.env.TEST_DATABASE_URL) {
+    const admin = new PostgresClient({ connectionString: process.env.TEST_DATABASE_URL, connectionTimeoutMillis: 10_000 });
+    await admin.connect();
+    const schema = `test_${randomUUID().replaceAll('-', '')}`;
+    t.after(async () => {
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    await admin.query(`SET search_path TO ${schema}`);
+    await admin.query(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+    const databaseUrl = new URL(process.env.TEST_DATABASE_URL);
+    databaseUrl.searchParams.set('options', `-c search_path=${schema}`);
+    reopen = () => openPostgresStore(databaseUrl.toString());
+  } else {
+    const dir = mkdtempSync(join(tmpdir(), 'speedhacks-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    reopen = () => openStore(dir);
+  }
+  const store = reopen();
   const server = createApp(config, store).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
+    await store.close();
   });
-  return { store, dir, url: `http://127.0.0.1:${server.address().port}` };
+  return { store, reopen, url: `http://127.0.0.1:${server.address().port}` };
 }
 
 async function connect(t, url, headers = {}) {
@@ -43,6 +64,11 @@ test('configuration fails closed with missing or reused secrets', () => {
   assert.throws(() => readConfig({}));
   assert.throws(() => readConfig({ ...config, CAMERA_TOKEN: config.DIAL_MCP_TOKEN }));
   assert.equal(readConfig(config).PORT, 3000);
+  assert.equal(readConfig({ ...config, DATABASE_URL: '' }).DATABASE_URL, undefined);
+  assert.throws(() => readConfig({ ...config, VERCEL: '1' }), /DATABASE_URL/);
+  assert.throws(() => readConfig({ ...config, DATABASE_URL: 'https://example.com' }));
+  assert.equal(readConfig({ ...config, VERCEL: '1', DATABASE_URL: 'postgres://localhost/memory' }).DATABASE_URL,
+    'postgres://localhost/memory');
 });
 
 test('camera endpoint rejects unauthenticated and malformed uploads', async t => {
@@ -56,18 +82,21 @@ test('camera endpoint rejects unauthenticated and malformed uploads', async t =>
 });
 
 test('observations survive reopening and newest timestamp wins, not upload order', async t => {
-  const { store, dir } = await fixture(t);
-  store.observe({ object: 'keys', location: 'new location', timestamp: '2026-01-02T00:00:00Z' });
-  store.observe({ object: 'keys', location: 'old location', timestamp: '2026-01-01T00:00:00Z' });
-  const reopened = openStore(dir);
-  assert.equal(findObject(reopened, ' KEYS ').evidence[0].location, 'new location');
-  assert.equal(findObject(reopened, 'wallet').status, 'unknown');
-  reopened.close();
+  const { store, reopen } = await fixture(t);
+  await store.observe({ object: 'keys', location: 'new location', timestamp: '2026-01-02T00:00:00Z' });
+  await store.observe({ object: 'keys', location: 'old location', timestamp: '2026-01-01T00:00:00Z' });
+  const reopened = reopen();
+  try {
+    assert.equal((await findObject(reopened, ' KEYS ')).evidence[0].location, 'new location');
+    assert.equal((await findObject(reopened, 'wallet')).status, 'unknown');
+  } finally {
+    await reopened.close();
+  }
 });
 
 test('MCP discovery works without caller headers but cannot retrieve data', async t => {
   const { store, url } = await fixture(t);
-  seedDemo(store);
+  await seedDemo(store);
   const client = await connect(t, url);
   assert.equal((await client.listTools()).tools.length, 3);
   assert.equal((await client.callTool({ name: 'find_object', arguments: { object: 'keys' } })).isError, true);
@@ -92,7 +121,7 @@ test('MCP requires its own secret and negotiates legacy initialization', async t
 
 test('authorized inbound MCP calls retrieve demo evidence and handle unknown objects', async t => {
   const { store, url } = await fixture(t);
-  seedDemo(store);
+  await seedDemo(store);
   const client = await connect(t, url, {
     'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'inbound',
   });
@@ -109,7 +138,7 @@ test('authorized inbound MCP calls retrieve demo evidence and handle unknown obj
 
 test('unknown caller and outbound direction cannot access memories', async t => {
   const { store, url } = await fixture(t);
-  seedDemo(store);
+  await seedDemo(store);
   for (const headers of [
     { 'X-Dial-User-Number': '+14155550999', 'X-Dial-Direction': 'inbound' },
     { 'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'outbound' },
@@ -122,13 +151,13 @@ test('unknown caller and outbound direction cannot access memories', async t => 
 test('frame ingestion validates JPEG and preserves newest capture', async t => {
   const { url, store } = await fixture(t);
   const headers = { Authorization: `Bearer ${config.CAMERA_TOKEN}`, 'Content-Type': 'application/json' };
-  for (const timestamp of ['2026-01-02T00:00:00Z', '2026-01-01T00:00:00Z']) {
+  for (const timestamp of ['2026-01-02T00:00:00Z', '2026-01-01T17:00:00-08:00', '2026-01-01T00:00:00Z']) {
     const response = await fetch(`${url}/camera/frame`, { method: 'POST', headers,
       body: JSON.stringify({ timestamp, jpegBase64: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64') }) });
     assert.equal(response.status, 201);
     assert.equal((await response.json()).inference, 'not_configured');
   }
-  assert.equal(store.latestFrame().timestamp, '2026-01-02T00:00:00Z');
+  assert.equal((await store.latestFrame()).timestamp, '2026-01-01T17:00:00-08:00');
   assert.equal((await fetch(`${url}/camera/frame`)).status, 401);
   assert.equal((await fetch(`${url}/camera/frame`, { headers })).status, 200);
   const invalid = await fetch(`${url}/camera/frame`, { method: 'POST', headers,
@@ -143,4 +172,24 @@ test('future observations are rejected', async t => {
     body: JSON.stringify({ object: 'keys', location: 'desk', timestamp: new Date(Date.now() + 60_000).toISOString() }),
   });
   assert.equal(response.status, 400);
+});
+
+test('demo seeding is idempotent across backend starts', async t => {
+  const { store } = await fixture(t);
+  await seedDemo(store);
+  await seedDemo(store);
+  assert.equal((await store.list('calendar')).length, 1);
+  assert.equal((await store.list('email')).length, 1);
+  assert.equal((await store.list('camera')).length, 1);
+});
+
+test('failed asynchronous writes return an error, never a successful upload', async t => {
+  const { store, url } = await fixture(t);
+  store.saveFrame = async () => { throw new Error('Database unavailable'); };
+  const response = await fetch(`${url}/camera/frame`, {
+    method: 'POST', headers: { Authorization: `Bearer ${config.CAMERA_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ timestamp: '2026-01-01T00:00:00Z', jpegBase64: '/9j/2Q==' }),
+  });
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: 'Internal server error' });
 });

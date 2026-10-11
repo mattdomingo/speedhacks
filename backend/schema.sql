@@ -1,0 +1,13 @@
+BEGIN;
+CREATE TABLE IF NOT EXISTS evidence (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  payload JSONB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS latest_frame (
+  slot INTEGER PRIMARY KEY CHECK (slot = 1),
+  timestamp TEXT NOT NULL,
+  jpeg BYTEA NOT NULL
+);
+COMMIT;

@@ -1,22 +1,22 @@
-# speedhacks
+# Recall
 
 Phone memory assistant hackathon scaffold. A person calls a number, asks about a plan or misplaced object, and hears an answer grounded in timestamped evidence.
 
 **Infrastructure only:** the runnable MCP tools read labeled synthetic memories. Google accounts, Dial calls, and object detection are not connected. Webcam uploads do not identify objects.
 
-## Proposed architecture
+## Architecture
 
 ```mermaid
 flowchart LR
     Caller[Person calling] <--> Dial[Dial managed voice agent]
     Dial <-->|Context MCP: authenticated tools| Backend[Hosted backend]
     Backend <-->|Digital module: planned adapter| Google[Calendar and email]
-    Backend <-->|Read and write evidence| Store[(SQLite on persistent volume)]
+    Backend <-->|Read and write evidence| Store[(Managed Postgres on Vercel)]
     Camera[Laptop webcam process] -->|HTTPS: authenticated frames| Backend
     Vision[Planned vision extraction] -.->|Timestamped observations| Backend
 ```
 
-One monorepo, two running processes: a hosted Node backend and a Python webcam process on a laptop. Digital and physical memory are separate backend modules. They can be deployed independently later; the hackathon uses one backend deployment.
+One monorepo, two running processes: a hosted Node/Express backend and a Python webcam process on a laptop. Digital and physical memory are modules within the same backend. Vercel's `services` configuration contains one hosted service, `recall`; `camera/` is a hardware capture client, not a deployable HTTP service. Local development and Docker Compose use SQLite unless `DATABASE_URL` is set.
 
 Dial owns speech recognition, conversation, and speech playback. Its managed voice agent calls the backend's MCP tools during the call. The camera collects evidence before a call; object lookup retrieves historical observations rather than describing only the current room.
 
@@ -26,7 +26,7 @@ The camera makes outbound HTTPS requests, requiring no public laptop port. The b
 
 | Engineer | Owns | Next work |
 | --- | --- | --- |
-| 1: Phone and deployment | `backend/voice/`, `backend/app.mjs`, Docker files | Connect Dial MCP, configure voice instructions, deploy and test a real call |
+| 1: Phone and deployment | `backend/voice/`, `backend/app.mjs`, database adapters, Vercel and Docker configuration | Provision Postgres and Vercel, connect Dial MCP, deploy and test a real call |
 | 2: Digital memory | `backend/digital/` | Add Google authorization and Calendar/email retrieval with source references |
 | 3: Physical memory | `camera/`, `backend/physical/` | Add vision extraction, placement observations, and last-seen validation |
 
@@ -87,6 +87,8 @@ Memory tools return `{"status":"supported","evidence":[...]}` or `{"status":"unk
 
 Dial supplies `X-Dial-User-Number` and `X-Dial-Direction` during calls. The backend checks the configured caller and inbound direction. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller.
 
+Vercel Deployment Protection must allow Dial and the laptop uploader to reach the deployment. Their application bearer tokens do not bypass Vercel's login protection. Use the project's production domain with the intended access settings when connecting these external clients.
+
 **The caller-number allowlist is a demo restriction, not verified identity.** Before real personal records, add caller verification, user-scoped storage and credentials, consent, and retention controls. The store is single-user. Keep the bearer secrets server-side.
 
 Reference: [Dial Context MCP documentation](https://docs.getdial.ai/documentation/platform/context-mcp). This scaffold does not create phone resources or place calls.
@@ -105,13 +107,67 @@ Engineer 3 adds inference and posts observations. The current uploader explicitl
 
 ## Deployment infrastructure
 
+### Vercel and managed Postgres
+
+The repository is configured for Vercel Services with a single Express service:
+
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "recall": {
+      "root": ".",
+      "framework": "express",
+      "entrypoint": "server.mjs"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": { "service": "recall" }
+    }
+  ]
+}
+```
+
+The catch-all preserves existing request paths: `/health`, `/mcp`, `/camera/frame`, and `/camera/observations`. There is no frontend at `/`; unimplemented paths return 404. Only `/health` is unauthenticated. No internal services or service bindings are needed because all backend modules run in `recall`. The laptop's `BACKEND_URL` is a manually configured public HTTPS origin, not an injected binding. Do not deploy `camera/capture.py` to Vercel: it requires a local webcam and OS permission.
+
+The native Express runtime handles the backend; Vercel does not use the Dockerfile. The root `server.mjs` entrypoint loads the existing backend startup and lets Vercel's Express builder discover it. Postgres holds both observations and the latest JPEG. Database calls are asynchronous, and the connection pool uses Vercel's lifecycle helper. When `VERCEL=1`, startup fails without `DATABASE_URL` instead of using ephemeral SQLite.
+
+Required setup before deploying:
+
+1. Create or select a Vercel project for this repository, with its root directory set to the repository root and project framework preset set to **Services**. Use a Node 22 runtime as specified in `package.json`.
+2. Connect a managed Postgres database through the [Vercel Marketplace](https://vercel.com/docs/postgres), or use an existing provider. Select a database region near the Vercel function region. Set `DATABASE_URL` to the provider's pooled connection URL with TLS. Keep preview and production databases separate; a preview must not write production memories.
+3. Set the environment variables below in each Vercel environment you intend to deploy. Keep local secrets in ignored `.env` files, never in `vercel.json` or client code.
+4. Initialize each new database once before serving traffic. With its `DATABASE_URL` in your local ignored `.env` or exported shell environment, run `npm run db:init`. This executes `backend/schema.sql` and preserves existing tables and records. It does not copy existing SQLite data, and migrations do not run during Vercel builds or function startup.
+5. Link the repository with `npx vercel@latest link`, verify locally using `npx vercel@latest dev -L`, then deploy a preview with `npx vercel@latest`. After checking it, publish with `npx vercel@latest --prod`. Set the laptop's `BACKEND_URL` to the production HTTPS origin and configure Dial's `/mcp` URL.
+
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | Vercel and optional local Postgres testing | Managed Postgres connection URL; required on Vercel |
+| `DIAL_MCP_TOKEN` | Backend and Dial configuration | At least 32 characters; must differ from the camera token |
+| `CAMERA_TOKEN` | Backend and laptop | At least 32 characters; authenticates frames and observations |
+| `DEMO_CALLER_NUMBER` | Backend | Consented caller in E.164 format; empty means no caller can retrieve evidence |
+| `DEMO_MODE` | Backend | `true` seeds synthetic records; defaults to `false` if omitted |
+| `BACKEND_URL` | Laptop only | Public backend origin, e.g. `https://YOUR_PROJECT.vercel.app`; local default follows `PORT` |
+| `DATA_DIR` | Local SQLite only | Database directory; default `./data`; ignored when `DATABASE_URL` is set |
+| `PORT` | Local server/Compose | Default `3000`; Vercel manages its service port |
+
+To use `vercel dev -L`, put local test database credentials and application secrets in `.env`. Use the port printed by Vercel for `/health`, `/mcp`, and `BACKEND_URL`. This exercises the same service routing as deployment without creating cloud resources. `npm start` still runs the backend directly for SQLite development.
+
+After deployment, check `/health`, verify unauthenticated camera requests return 401, and test an authenticated upload and retrieval. `/health` is liveness only; it does not prove database connectivity. Run the MCP tests and a real Dial call before claiming the voice integration works. Existing SQLite records stay in `DATA_DIR`; moving those records into Postgres requires a separate import.
+
+These files configure deployment; they do not by themselves provision a Vercel project, database, domain, or Dial number. See [Vercel Services](https://vercel.com/docs/services), [Express hosting](https://vercel.com/docs/frameworks/backend/express), and [database connection pools](https://vercel.com/kb/guide/connection-pooling-with-functions).
+
+### Local Docker Compose
+
 ```sh
 docker compose up --build
 ```
 
-Compose includes environment injection, a healthcheck, and persistent SQLite storage. The port binds to laptop loopback. For cloud hosting, use the Dockerfile, inject the same environment variables, mount persistent storage at `/app/data`, run one replica, and terminate HTTPS at ingress. Keep the camera on the laptop.
+Compose includes environment injection, a healthcheck, and a persistent SQLite volume. The port binds to laptop loopback. Leave `DATABASE_URL` unset or empty to use that volume; a configured URL selects Postgres instead. For Docker hosts other than Vercel, SQLite requires persistent storage at `/app/data` and a single replica. Keep the camera on the laptop.
 
-Do not use ephemeral container storage for SQLite. Cloud hosting, a domain, and Dial activation are not provisioned.
+Do not use ephemeral container storage for SQLite. Neither Compose nor the Dockerfile provisions cloud hosting.
 
 ## Checks
 
@@ -120,4 +176,12 @@ npm test
 python3 -m unittest discover -s camera -p 'test_*.py'
 ```
 
-GitHub Actions runs both suites. Checks cover MCP discovery and retrieval, caller restrictions, unknown evidence, validation, timestamp ordering, persistence, and camera upload limits. Real calls, Google access, webcam accuracy, and clinical usefulness remain unverified.
+To run the backend suite against a disposable Postgres database:
+
+```sh
+TEST_DATABASE_URL=postgres://test:test@127.0.0.1:5432/speedhacks_test npm test
+```
+
+The test database user needs permission to create schemas. Each fixture creates and removes its own schema; the suite does not use `DATABASE_URL` or erase the database's existing tables. Use a direct local/test connection that supports PostgreSQL session options for these tests, not a production pooler.
+
+GitHub Actions is configured to run the backend suite with SQLite and Postgres 17, plus the Python camera suite. This configuration is not proof that a hosted CI run passed. Checks cover MCP discovery and retrieval, caller restrictions, unknown evidence, validation, timestamp ordering, persistence, and camera upload limits. Real calls, Google access, webcam accuracy, and clinical usefulness remain unverified.

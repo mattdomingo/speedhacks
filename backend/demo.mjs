@@ -1,4 +1,4 @@
-export function seedDemo(store, now = new Date()) {
+export async function seedDemo(store, now = new Date()) {
   const date = now.toISOString().slice(0, 10);
   const timestamp = now.toISOString();
   for (const item of [
@@ -9,5 +9,5 @@ export function seedDemo(store, now = new Date()) {
     { id: `demo-keys-${date}`, source: 'camera', object: 'keys',
       location: 'beside the blue mug on the desk',
       text: 'DEMO: Keys last seen beside the blue mug on the desk.' },
-  ]) store.put({ ...item, timestamp, demo: true });
+  ]) await store.put({ ...item, timestamp, demo: true });
 }
