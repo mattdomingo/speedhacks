@@ -9,6 +9,7 @@ import { localInstant } from '../time.mjs';
 import { spokenTime } from '../voice/reminders.mjs';
 import { createDial } from '../voice/dial.mjs';
 import { PHONE_STYLE } from '../voice/phone-style.mjs';
+import { scheduleMedicineReminder } from '../../scripts/live-medicine-reminder.mjs';
 import { testStore, TEST_DATABASE_URL } from './helpers.mjs';
 
 const PATIENT = '+14155550123';
@@ -528,4 +529,37 @@ test('Dial polling filters outbound history and matches the exact ID without exp
     assert.doesNotMatch(error.message, /14155550123|contact|since/);
     return true;
   });
+});
+
+
+test('live medicine demo schedules through authenticated MCP and delivers each requested channel once', async t => {
+  const { url, clock, dial, store } = await fixture(t, { CALLER_PIN: '1234' });
+  const env = { BACKEND_URL: url, DIAL_MCP_TOKEN: config.DIAL_MCP_TOKEN,
+    DEMO_CALLER_NUMBER: PATIENT, STEPH_NUMBER: STEPH, CALLER_PIN: '1234' };
+  for (const channel of ['call', 'text']) {
+    const reminder = await scheduleMedicineReminder(env, channel);
+    assert.equal(reminder.channel, channel);
+    assert.equal((await reminderRow(store, reminder.id)).status, 'scheduled');
+    assert.equal(Date.parse(reminder.due_at), START + 60_000);
+  }
+  assert.equal(dial.calls.length + dial.texts.length, 0);
+  clock.now += 60_000;
+  assert.equal((await dispatch(url)).status, 200);
+  assert.equal((await dispatch(url)).status, 200);
+  assert.equal(dial.calls.length, 1);
+  assert.equal(dial.texts.length, 1);
+  assert.equal(dial.calls[0].to, PATIENT);
+  assert.equal(dial.texts[0].to, PATIENT);
+  assert.match(dial.calls[0].instruction, /Please take your medicine\. This is only a demonstration; no action is needed/);
+  assert.match(dial.texts[0].body, /Please take your medicine\. This is only a demonstration; no action is needed/);
+});
+
+test('live medicine demo preserves caller and PIN checks and rejects invalid channels', async t => {
+  const { url, dial } = await fixture(t, { CALLER_PIN: '1234' });
+  const env = { BACKEND_URL: url, DIAL_MCP_TOKEN: config.DIAL_MCP_TOKEN,
+    DEMO_CALLER_NUMBER: PATIENT, STEPH_NUMBER: STEPH };
+  await assert.rejects(scheduleMedicineReminder(env, 'text'), /PIN/);
+  await assert.rejects(scheduleMedicineReminder({ ...env, DEMO_CALLER_NUMBER: '+14155550999' }, 'call'), /not authorized/);
+  await assert.rejects(scheduleMedicineReminder(env, 'both'), /Choose call or text/);
+  assert.equal(dial.calls.length + dial.texts.length, 0);
 });

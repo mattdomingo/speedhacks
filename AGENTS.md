@@ -276,6 +276,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** A repeatable demo needs no paid calls, credentials, new service or database migration. The phone script advances its own clock and prints scripted dialogue; it does not prove live Dial audio, SMS delivery or notification behavior on a physical phone. App and phone demo state remain separate. Recurring medication schedules and adherence tracking are out of scope.
 - **Sources / validation:** `scripts/demo-medicine-reminder.mjs` includes dispatch and fallback assertions; `ios/RecallTests/RecallTests.swift` covers notification content, storage and cleanup; `ios/RecallUITests/WalkthroughTests.swift` covers the demo card. Usage is in the root and iOS READMEs.
 
+### DEC-028 — Explicit live reminder demo through the hosted scheduler
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 1; project owner requested a real call or text and selected a call to the configured number.
+- **Decision:** Preserve the offline default. `npm run demo:medicine -- --live call|text` explicitly loads local environment settings and schedules one fictional reminder one minute ahead through the existing authenticated MCP `set_reminder` tool. It retains caller, line and PIN checks and uses the hosted durable dispatcher, rather than sending directly from an ephemeral local store. Extends [DEC-027](#dec-027--isolate-medicine-reminder-demos-from-real-delivery) with an opt-in live mode.
+- **Reason and consequences:** Live delivery needs real credentials and the hosted cron; normal retries, call reconciliation and missed-call fallback remain in the backend. Each successful command schedules a new reminder, so an ambiguous scheduling failure must be checked before retrying. No new service, schema, delivery endpoint or medication-completion claim is introduced.
+- **Sources / validation:** `scripts/live-medicine-reminder.mjs`, `scripts/demo-medicine-reminder.mjs`, `backend/test/reminders.test.mjs`; authenticated MCP integration tests cover both channels, single dispatch and caller/PIN failures.
+
 Copy this template for the next decision:
 
 ```markdown
