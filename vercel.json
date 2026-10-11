@@ -19,6 +19,10 @@
     {
       "path": "/cron/google-sync",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/cron/dial-reminders",
+      "schedule": "* * * * *"
     }
   ]
 }

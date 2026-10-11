@@ -52,9 +52,11 @@ function decodeEntities(text) {
   });
 }
 
+// Also strips what Postgres jsonb rejects: NUL characters and unpaired UTF-16 surrogates (a
+// cut emoji). One bad string would otherwise fail the whole batch write of a sync.
 function clip(text, length) {
-  const clean = text.replace(/\s+/g, ' ').trim();
-  return clean.length > length ? `${clean.slice(0, length - 1)}…` : clean;
+  const clean = text.replace(/\u0000/g, '').replace(/\s+/g, ' ').trim().toWellFormed();
+  return clean.length > length ? `${clean.slice(0, length - 1).replace(/[\uD800-\uDBFF]$/, '')}…` : clean;
 }
 
 // Display names are chosen by the sender and easy to fake ("Mom", "Your bank"), so the

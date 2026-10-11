@@ -44,6 +44,16 @@ export function startOfDay(date, timeZone) {
   return new Date(instant);
 }
 
+// Instant of a local wall-clock "YYYY-MM-DDTHH:MM", settled in two passes like startOfDay.
+// Returns null for a date that does not exist (e.g. February 30).
+export function localInstant(local, timeZone) {
+  const wall = Date.parse(`${local}:00Z`);
+  if (!Number.isFinite(wall) || new Date(wall).toISOString().slice(0, 16) !== local) return null;
+  let instant = wall - offsetMs(new Date(wall), timeZone);
+  instant = wall - offsetMs(new Date(instant), timeZone);
+  return new Date(instant);
+}
+
 export function describeDate(date, timeZone) {
   return new Intl.DateTimeFormat('en-US', {
     timeZone, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',

@@ -22,3 +22,15 @@ export const objectInput = z.object({ object: shortText, pin });
 export function memoryResult(evidence) {
   return { status: evidence.length ? 'supported' : 'unknown', evidence };
 }
+
+// Phone reminders. `at` is wall-clock time in the person's time zone; the agent never does offset math.
+export const setReminderInput = z.object({
+  text: z.string().trim().min(1).max(300),
+  at: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, 'Use YYYY-MM-DDTHH:MM local time').optional(),
+  in_minutes: z.number().int().min(1).max(10_080).optional(),
+  channel: z.enum(['call', 'text']).default('call'),
+  pin,
+});
+export const listRemindersInput = z.object({ pin });
+export const cancelReminderInput = z.object({ id: z.string().min(1).max(100), pin });
+export const clockInput = z.object({});

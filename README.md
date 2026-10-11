@@ -69,6 +69,9 @@ Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch 
 | `get_schedule({date})` | Authorized inbound demo caller | Calendar plans for an explicit `YYYY-MM-DD` date |
 | `search_messages({query})` | Authorized inbound demo caller | Search synced Gmail (and fixtures) by keywords |
 | `find_object({object})` | Authorized inbound demo caller | Latest matching observation by capture time |
+| `whats_today()` | Demo caller on Steph's line, inbound or outbound | Local date and time; listed only when `DIAL_API_KEY` is set, like the reminder tools |
+| `set_reminder({text, in_minutes \| at, channel?})` | Demo caller on Steph's line, inbound or outbound | Schedule a reminder call (default) or text; `at` is local `YYYY-MM-DDTHH:MM` |
+| `list_reminders()` / `cancel_reminder({id})` | Demo caller on Steph's line, inbound or outbound | The caller's upcoming reminders, soonest first |
 | `POST /camera/frame` | `Bearer CAMERA_TOKEN` | Store latest JPEG, at most 500 KB; return frame ID and actual inference status |
 | `GET /camera/frame` | `Bearer CAMERA_TOKEN` | Retrieve latest JPEG with `X-Captured-At` |
 | `GET /camera/status` | `Bearer CAMERA_TOKEN` | Capture/analysis freshness, processing errors, latency, token usage |
@@ -80,9 +83,10 @@ Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch 
 | `POST /google/sync` | `Bearer ADMIN_TOKEN` | Sync Calendar and Gmail now |
 | `DELETE /google/connection` | `Bearer ADMIN_TOKEN` | Revoke at Google and delete synced Google evidence |
 | `GET /cron/google-sync` | `Bearer CRON_SECRET` | Vercel Cron: sync Google and prune expired Dial events |
-| `POST /webhooks/dial` | `X-Dial-Signature` HMAC | Store Dial call/message events (deduplicated, pruned after retention) |
+| `GET /cron/dial-reminders` | `Bearer CRON_SECRET` | Vercel Cron, every minute: deliver due reminders, settle calls whose webhook never arrived |
+| `POST /webhooks/dial` | `X-Dial-Signature` HMAC | Store Dial call/message events (deduplicated, pruned after retention); `call.ended` settles reminder calls |
 
-With `CALLER_PIN` set, each memory tool also takes `pin`; without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Five wrong PINs lock that caller number out for 15 minutes.
+With `CALLER_PIN` set, each memory and reminder tool also takes `pin` (`whats_today` does not); without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Every supplied PIN is counted before it is compared, so at most five guesses per caller number are evaluated in 15 minutes, however many arrive at once; `/mcp` also rejects JSON-RPC batches.
 
 Observation body:
 
@@ -117,21 +121,44 @@ How retrieval works during a call:
 - Dates use `TIMEZONE`, else the Google calendar's zone, else UTC, including daylight-saving changes. `get_schedule`'s description tells the voice model today's date in that zone.
 - Email text is the sender, subject and Gmail's snippet (at most 300 characters), never full bodies. The refresh token is encrypted with AES-256-GCM; Google writes and lookup responses are bound to the active connection and granted scopes, including across disconnects and reconnections.
 
-## Dial connection: follow-up work
+## Steph's phone line and reminders
+
+Steph's Dial number is **+1 240 896 2183** (Dial nickname `Steph`, default `STEPH_NUMBER`). Its inbound instruction is `backend/voice/instructions.txt`. When configured, calling it reaches Steph; reminder calls and texts come from it. A real hosted reminder call and SMS delivery still need separate validation.
+
+A caller says, "Remind me in ten minutes to take the laundry out" or "Remind me tomorrow at 9 to call Sarah." Steph calls `whats_today` for clock times, then `set_reminder`, and reads back the spoken time. The reminder is stored in the `reminders` table. Every minute Vercel Cron calls `/cron/dial-reminders`, which claims due reminders under a two-minute database lease and phones the caller from Steph's line, or texts them for `channel: "text"`. On a reminder call, the same person can ask to be reminded again.
+
+- **Outcome:** the signed `call.ended` webhook marks an answered call `delivered`. A busy, unanswered, failed or cancelled call becomes `missed` and gets one fallback text. Transitions are conditional updates, so redeliveries and concurrent requests cannot send a second text.
+- **Retries:** call placement uses the Dial `Idempotency-Key` `reminder-<id>`, so a retried claim returns the original call instead of dialing again. Transient errors retry for up to 3 attempts. A 4xx (for example 402, no credit) fails at once. Texts have no idempotency key and are never retried.
+- **Lost webhooks:** a reminder still `calling` after 10 minutes is settled from `GET /calls/{id}` only once Dial reports the call terminated.
+- **Times:** spoken and local times use `TIMEZONE`, then the Google calendar's zone, then UTC. Set `TIMEZONE` for the person's zone.
+- `shortcut:` an answered call counts as delivered even if voicemail picked up; check the transcript if that matters. Calls are capped at 180 s while the Dial account is on its free tier (300 s maximum, 2 concurrent calls).
+
+### Connect Dial
 
 1. Verify the production [health endpoint](https://recall-kappa-nine.vercel.app/health), or use a development HTTPS tunnel when testing a local backend.
-2. In Dial Context MCP settings, add `https://recall-kappa-nine.vercel.app/mcp` with static header `Authorization: Bearer YOUR_DIAL_MCP_TOKEN`.
-3. Configure the number's inbound instruction with `backend/voice/instructions.txt`.
-4. Set `DEMO_CALLER_NUMBER` (and `CALLER_PIN`), then call from that number with `DIAL_LOG_HEADERS=true` once. The log lists the header names Dial sent, with phone numbers cut to their last four digits and other Dial values reduced to their length. If the caller and direction headers differ from the defaults, set `DIAL_CALLER_HEADER` and `DIAL_DIRECTION_HEADER`, then turn logging off.
-5. Optional: in the Dial dashboard, add a webhook to `https://…/webhooks/dial` and put its signing secret in `DIAL_WEBHOOK_SECRET`. Set a separate `CRON_SECRET` even when Google is disabled: the authenticated cron prunes expired Dial events without waiting for another webhook. Verify cron delivery after deploying. Events such as `call.ended` and `call.transcribed` are stored once each; transcripts contain personal speech, so retention defaults to 30 days.
+2. Apply `npm run db:init` on the isolated preview database and verify the preview before applying the same schema to production; the schema adds the `reminders` table. Before enabling reminders, set `DIAL_API_KEY`, a separate `CRON_SECRET`, `DEMO_CALLER_NUMBER` (the consented caller, never committed), `CALLER_PIN`, `TIMEZONE`, and `DEMO_MODE=false` in the intended environment, then redeploy. The existing Vercel Pro plan supports the per-minute reminder cron.
+3. Connect the Context MCP (account-wide) and the webhook. Use that environment's `DIAL_MCP_TOKEN`. Put the returned `whsec_…` secret in `DIAL_WEBHOOK_SECRET` and redeploy. Keep `CRON_SECRET` configured even when Google is disabled: scheduled retention cleanup must not depend on another webhook arriving.
 
-Dial is expected to supply `X-Dial-User-Number` and `X-Dial-Direction` during calls; public Dial sources do not confirm these names, hence step 4. The backend checks the configured caller and inbound direction. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller.
+   ```sh
+   curl -X POST https://api.getdial.ai/api/v1/context-mcps -H "Authorization: Bearer $DIAL_API_KEY" -H 'Content-Type: application/json' \
+     -d '{"name":"Recall","url":"https://recall-kappa-nine.vercel.app/mcp","headers":{"Authorization":"Bearer '"$DIAL_MCP_TOKEN"'"}}'
+   curl -X POST https://api.getdial.ai/api/v1/webhooks -H "Authorization: Bearer $DIAL_API_KEY" -H 'Content-Type: application/json' \
+     -d '{"targetUrl":"https://recall-kappa-nine.vercel.app/webhooks/dial","eventTypes":["call.ended","call.transcribed"]}'
+   ```
+
+4. Apply the persona after any edit: `dial number set +12408962183 --inbound-instruction "$(cat backend/voice/instructions.txt)"`.
+5. Call once with `DIAL_LOG_HEADERS=true`. The log lists the header names Dial sent, with phone numbers cut to their last four digits and other Dial values reduced to their length. If the caller and direction headers differ from the defaults, set `DIAL_CALLER_HEADER` and `DIAL_DIRECTION_HEADER`, then turn logging off.
+6. Ask for a reminder in two minutes and hang up. Check that the reminder call arrives, then that an unanswered call produces a text. Events such as `call.ended` and `call.transcribed` are stored once each; transcripts contain personal speech, so retention defaults to 30 days and the ten-minute Google-sync cron keeps pruning even after webhooks are switched off. Verify the scheduled invocation after deployment. On Vercel, `CRON_SECRET` is required with webhooks or Google; boot fails without it.
+
+Locally, Vercel Cron does not run: trigger delivery with `curl -H "Authorization: Bearer $CRON_SECRET" http://127.0.0.1:3000/cron/dial-reminders`.
+
+Dial's [Context MCP documentation](https://docs.getdial.ai/documentation/platform/context-mcp) names `X-Dial-User-Number` (the other party), `X-Dial-Direction` and `X-Dial-Agent-Number` (your Dial number); step 5 confirms them on a live call. Memory tools require the configured caller on an inbound call. Reminder tools also allow outbound reminder calls to that caller, but only from `STEPH_NUMBER`. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller.
 
 Vercel Deployment Protection must allow Dial and the laptop uploader to reach the deployment. Their application bearer tokens do not bypass Vercel's login protection. Use the project's production domain with the intended access settings when connecting these external clients.
 
 **The caller-number allowlist is a demo restriction, not verified identity.** Set `CALLER_PIN` before connecting real Google data. For more than one user, add verified identity, user-scoped storage and credentials, consent, and retention controls. The store is single-user. Keep the bearer secrets server-side.
 
-Reference: [Dial Context MCP documentation](https://docs.getdial.ai/documentation/platform/context-mcp). This scaffold does not create phone resources or place calls.
+Reference: [Context MCP](https://docs.getdial.ai/documentation/platform/context-mcp), [webhooks](https://docs.getdial.ai/documentation/platform/webhooks), [placing calls](https://docs.getdial.ai/api-reference/rest-api/calls/make-call). The backend places reminder calls and texts; it does not create phone numbers. US SMS from a number without carrier (10DLC) registration may be filtered, so treat the fallback text as best-effort.
 
 ## Camera process
 
@@ -149,7 +176,7 @@ Use `PYTHON=.venv/bin/python npm run camera -- --preview` to position the tablet
 
 ### Vercel and managed Postgres
 
-The existing [Vercel project `recall`](https://vercel.com/openfloor-51a7e770/recall) belongs to the **openfloor** team (`openfloor-51a7e770`). The team uses Vercel Pro (checked October 11, 2026); `vercel.json` schedules sync and retention cleanup every ten minutes. Its connected Git repository is `mattdomingo/speedhacks`, with `main` as the production branch. Pushes to `main` deploy production; other branches receive protected previews.
+The existing [Vercel project `recall`](https://vercel.com/openfloor-51a7e770/recall) belongs to the **openfloor** team (`openfloor-51a7e770`). The team uses Vercel Pro (checked October 11, 2026); `vercel.json` schedules Google sync and retention cleanup every ten minutes, plus reminder delivery every minute. Its connected Git repository is `mattdomingo/speedhacks`, with `main` as the production branch. Pushes to `main` deploy production; other branches receive protected previews.
 
 Neon resources `recall-production` and `recall-preview` use the Free plan in `iad1`, alongside the function region. Their initialized databases and API tokens are separate. Each database is connected only to its matching Vercel environment. At the October 11 hosting handoff, production ran with `DEMO_MODE=true` and `DEMO_CALLER_NUMBER` was not configured, so MCP tool discovery works but callers cannot retrieve evidence until a consented test number is configured and deployed.
 
@@ -180,7 +207,8 @@ The repository is configured for Vercel Services with a single Express service:
     }
   ],
   "crons": [
-    { "path": "/cron/google-sync", "schedule": "*/10 * * * *" }
+    { "path": "/cron/google-sync", "schedule": "*/10 * * * *" },
+    { "path": "/cron/dial-reminders", "schedule": "* * * * *" }
   ]
 }
 ```
@@ -193,7 +221,7 @@ For schema or configuration changes to the existing deployment:
 
 1. Link the existing `recall` project as above. Confirm the target environment and database before changing either. Keep the Node 22 runtime specified in `package.json`.
 2. Use the provider's TLS-enabled pooled `DATABASE_URL`, with the database near the function region. Preview and production must keep separate databases and credentials.
-3. Configure the variables below in the intended Vercel environment. Keep local secrets in ignored `.env` files, never in `vercel.json` or client code. Configure `CRON_SECRET` for hosted Google sync or Dial webhook retention.
+3. Configure the variables below in the intended Vercel environment. Keep local secrets in ignored `.env` files, never in `vercel.json` or client code. Configure `CRON_SECRET` for hosted Google sync, Dial webhook retention and reminder delivery.
 4. Apply `npm run db:init` with the **preview** database URL first. It executes `backend/schema.sql`; migrations do not run during builds or startup. Deploy a protected preview and verify authenticated reads/writes and the affected integration there. Use only a disposable database for `TEST_DATABASE_URL` checks.
 5. After preview validation, apply the same reviewed schema to the **production** database before merging dependent code to `main`. Check the resulting production deployment and scheduled cron. Keep the laptop's `BACKEND_URL` and Dial's `/mcp` URL pointed at the intended production origin.
 
@@ -210,8 +238,10 @@ For schema or configuration changes to the existing deployment:
 | `DATA_DIR` | Local SQLite only | Database directory; default `./data`; ignored when `DATABASE_URL` is set |
 | `CALLER_PIN` | Backend | 4–8 digits callers must also say; set before connecting real Google data |
 | `ADMIN_TOKEN`, `GOOGLE_*` | Backend | Google connection and sync; see [Google connection](#google-connection) |
-| `CRON_SECRET` | Backend / Vercel Cron | At least 32 characters; required with hosted Google sync or Dial webhooks so scheduled sync and retention cleanup can authenticate |
+| `CRON_SECRET` | Backend / Vercel Cron | At least 32 characters; required with hosted Google sync, Dial webhooks or reminders so scheduled requests can authenticate |
 | `DIAL_WEBHOOK_SECRET`, `DIAL_*_HEADER`, `DIAL_LOG_HEADERS` | Backend | Dial webhooks and caller-header names |
+| `DIAL_API_KEY` | Backend only | Dial `sk_live_` key for reminder calls and texts; unset turns reminders off |
+| `STEPH_NUMBER` | Backend | Steph's Dial line; defaults to `+12408962183` |
 | `KEEWANO_API_KEY` | Backend | Optional Keewano analytics; empty disables it |
 | `PORT` | Local server/Compose | Default `3000`; Vercel manages its service port |
 
@@ -235,7 +265,7 @@ Do not use ephemeral container storage for SQLite. Neither Compose nor the Docke
 
 | Sponsor | Use here | Status |
 | --- | --- | --- |
-| Dial | Managed voice agent, Context MCP to `/mcp`, signed webhooks to `/webhooks/dial` | Backend implemented; provision/configure account and confirm caller headers on a real call |
+| Dial | Steph's number (+12408962183), managed voice agent, Context MCP, signed webhooks, reminder calls and texts | Backend implemented; configure account and verify caller headers, a real reminder call and SMS delivery |
 | Keewano | Tool, latency, evidence-origin, sync and call-event analytics | Optional event reporting; `KEEWANO_API_KEY` enables it. No product query loop is implemented |
 | Alike | Shared decisions for coding agents (see [AGENTS.md](AGENTS.md#alike-coordination-when-connected)) | Development workflow; inspect capture/privacy settings before sharing sensitive work |
 | Darwin | Agent discovery | Not integrated; current memory retrieval does not need provider discovery |
@@ -259,6 +289,8 @@ Keewano receives no phone numbers or personal content: callers become HMAC-deriv
 npm test
 python3 -m unittest discover -s camera -p 'test_*.py'
 ```
+
+After every successful Vercel production deployment, the **Deployment smoke** workflow probes the production domain without credentials: `/health`, a 401 or 503 on every protected route, and 404 at `/`. Run it on demand from the Actions tab, or locally with `node scripts/smoke-deploy.mjs https://recall-kappa-nine.vercel.app`. It proves liveness and authentication, not Google, Dial or recognition.
 
 To run the backend suite against a disposable Postgres database:
 

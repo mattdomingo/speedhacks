@@ -40,7 +40,8 @@ function readRawBody(req) {
   });
 }
 
-export function dialWebhook(config, store, analytics) {
+// onEvent runs for every verified delivery, including redeliveries, so it must be idempotent.
+export function dialWebhook(config, store, analytics, onEvent) {
   return async (req, res) => {
     if (!config.DIAL_WEBHOOK_SECRET) return res.status(503).json({ error: 'Endpoint is not configured' });
     const body = await readRawBody(req);
@@ -56,6 +57,7 @@ export function dialWebhook(config, store, analytics) {
     // Stored as received, including transcripts; pruned after DIAL_EVENT_RETENTION_DAYS.
     const fresh = await store.recordDialEvent(event, config.DIAL_EVENT_RETENTION_DAYS ?? 30);
     if (fresh) analytics.dialEvent(event.type);
+    await onEvent?.(event);
     res.json({ received: true, duplicate: !fresh });
   };
 }

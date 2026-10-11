@@ -619,3 +619,52 @@ test('a pending OAuth callback cannot undo a disconnect or overwrite a newer con
     assert.deepEqual(await store.syncState(), []);
   });
 });
+
+test('a cut emoji or NUL in Google text cannot fail the sync batch', async t => {
+  const { url, google, remote, store } = await fixture(t);
+  await connectGoogle(url, store, remote);
+  const nasty = `${'a'.repeat(198)}😀 and more`;
+  remote.events = [{ id: 'e1', status: 'confirmed', summary: nasty, location: 'Room\u00001',
+    start: { dateTime: `${today}T10:00:00-07:00` }, end: { dateTime: `${today}T11:00:00-07:00` } }];
+  remote.messages = [
+    { id: 'm1', internalDate: String(Date.now()), snippet: 'ok', body: 'ok',
+      payload: { headers: [{ name: 'From', value: 'a@example.com' }, { name: 'Subject', value: nasty }] } },
+    { id: 'm2', internalDate: String(Date.now()), snippet: 'nul\u0000here', body: 'nul',
+      payload: { headers: [{ name: 'From', value: 'b@example.com' }, { name: 'Subject', value: 'fine' }] } },
+  ];
+  const results = await google.syncAll();
+  assert.deepEqual(results.map(result => result.ok), [true, true]);
+  const counts = await store.countByOrigin();
+  assert.equal(counts['google-calendar'], 1);
+  assert.equal(counts['google-gmail'], 2);
+  const [event] = await store.list('calendar');
+  assert.ok(event.title.isWellFormed() && event.title.endsWith('…'));
+  assert.ok(!JSON.stringify(await store.list('email')).includes('\\u0000'));
+});
+
+test('a cached access token is dropped when another instance reconnects the account', async t => {
+  const { url, store, remote } = await fixture(t);
+  await connectGoogle(url, store, remote);
+  const other = createGoogle({ config, store, fetch: remote.fetch, log: quietLog });
+  await other.fetchDay(addDays(today, 120));
+  const refreshes = () => remote.calls.filter(call => call === 'POST oauth2.googleapis.com/token').length;
+  const before = refreshes();
+  await other.fetchDay(addDays(today, 121));
+  assert.equal(refreshes(), before, 'the cached token is reused while the connection is unchanged');
+  await connectGoogle(url, store, remote);
+  const afterReconnect = refreshes();
+  await other.fetchDay(addDays(today, 122));
+  assert.equal(refreshes(), afterReconnect + 1, 'a new stored refresh token invalidates the old cache');
+  await store.deleteGoogleConnection();
+  await assert.rejects(other.fetchDay(addDays(today, 123)), /not connected/);
+});
+
+test('on Vercel, Google or Dial webhooks require CRON_SECRET', () => {
+  const base = { DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64), VERCEL: '1', DATABASE_URL: TEST_DATABASE_URL };
+  assert.throws(() => readConfig({ ...base, DIAL_WEBHOOK_SECRET: 'w'.repeat(32) }), /CRON_SECRET/);
+  const google = { ADMIN_TOKEN: 'a'.repeat(64), GOOGLE_CLIENT_ID: 'x', GOOGLE_CLIENT_SECRET: 'y',
+    GOOGLE_TOKEN_KEY: 'f'.repeat(64), GOOGLE_REDIRECT_URI: 'https://memory.example.com/google/callback' };
+  assert.throws(() => readConfig({ ...base, ...google }), /CRON_SECRET/);
+  assert.equal(readConfig({ ...base, ...google, CRON_SECRET: 'r'.repeat(64) }).CRON_SECRET, 'r'.repeat(64));
+  assert.equal(readConfig({ ...base, VERCEL: undefined, DIAL_WEBHOOK_SECRET: 'w'.repeat(32) }).CRON_SECRET, undefined);
+});
