@@ -17,7 +17,7 @@ test('the golden-set scorer checks visible text, banned words, card type, citati
   const keys = { id: 'k', question: 'Where are my keys?', expected: { contains: ['kitchen counter'], card_type: 'photo', memory_ids: ['photo-keys'], unsure: false } };
   assert.equal(scoreAnswer(keys, { answer: 'On the kitchen counter.', card_type: 'photo', memory_ids: ['photo-keys'] }, memories).correct, true);
   assert.deepEqual(scoreAnswer(keys, { answer: 'In the car.', card_type: 'place', memory_ids: ['car-1'] }, memories).problems,
-    ['missing "kitchen counter"', 'card_type place ≠ photo', 'does not cite photo-keys', 'cites unknown car-1']);
+    ['missing "kitchen counter"', 'card_type place ≠ photo', 'cites none of photo-keys', 'cites unknown car-1']);
   // A person card passes on the facts the app shows for that person, not only the sentence.
   const sam = { id: 's', question: "Who's Sam again?", expected: { contains: ['Sam Chen', 'Tokyo ramen'], card_type: 'person', memory_ids: [], unsure: false } };
   assert.equal(scoreAnswer(sam, { answer: 'Sam Chen is your friend.', card_type: 'person', memory_ids: ['person-sam'] }, memories).correct, true);

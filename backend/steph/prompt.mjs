@@ -31,8 +31,17 @@ function dataLine(memory) {
   return JSON.stringify(memory).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
 }
 
+// Models misread ISO offsets (a 3 PM event stamped 22:00Z came back as "10 PM"), so each memory
+// carries its time already written in the person's own zone.
+function withLocalTime(memory, timeZone) {
+  if (!timeZone) return memory;
+  const { timestamp, ...rest } = memory;
+  return { ...rest, time: localTime(timestamp, timeZone) };
+}
+
 function context(memories, now, timeZone) {
-  return `<memories>\n${memories.map(dataLine).join('\n')}\n</memories>\n\n${UNTRUSTED}\nCurrent local time: ${localTime(now, timeZone)}`;
+  const lines = memories.map(memory => dataLine(withLocalTime(memory, timeZone)));
+  return `<memories>\n${lines.join('\n')}\n</memories>\n\n${UNTRUSTED}\nCurrent local time: ${localTime(now, timeZone)}`;
 }
 
 export function askTurn({ question, now, time_zone, memories }) {
