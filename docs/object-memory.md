@@ -74,7 +74,7 @@ Say the historical location and time, and explain that the camera has not checke
 
 No provisioned phone number or Dial account is required. For MCP-only testing, set `DEMO_CALLER_NUMBER=+14155550123` in both the backend environment and the local `.env`; redeploy after changing hosted configuration. This reserved number is only an authorization value in request headers. The existing `DIAL_MCP_TOKEN` is still required, and no phone call is placed.
 
-With the backend running, `DEMO_MODE=false`, its matching `DIAL_MCP_TOKEN` and allowlisted `DEMO_CALLER_NUMBER` loaded locally:
+With the backend running, `DEMO_MODE=false`, its matching `DIAL_MCP_TOKEN` and allowlisted `DEMO_CALLER_NUMBER` loaded locally (plus `CALLER_PIN` if the backend sets one):
 
 ```sh
 node --env-file=.env scripts/smoke-object-memory.mjs

@@ -16,7 +16,7 @@ Recall answers phone questions using timestamped evidence. Dial handles the voic
 | Area | Responsible role | Main paths |
 | --- | --- | --- |
 | Phone and deployment | Engineer 1 | `backend/voice/`, `backend/app.mjs`, `backend/config.mjs`, `backend/index.mjs`, `backend/store.mjs`, `backend/postgres.mjs`, `backend/schema.sql`, `server.mjs`, hosting and CI configuration |
-| Digital memory | Engineer 2 | `backend/digital/` |
+| Digital memory | Engineer 2 | `backend/digital/` (including its SQLite/Postgres stores), `backend/analytics/` |
 | Physical memory | Engineer 3 | `camera/`, `backend/physical/` |
 | Shared contracts | All affected owners | `contracts/index.mjs`, callers, fixtures, tests, and integration docs |
 
@@ -137,6 +137,34 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Decision:** Exercise camera uploads and `find_object` through the existing MCP smoke client, using a reserved test identity configured in both the backend and client. Keep the bearer token and inbound caller checks; no provisioned phone number or Dial account is required for this test.
 - **Reason and consequences:** Camera and memory integration can be checked before voice integration is ready. This proves neither a real call nor physical recognition accuracy; those retain their separate acceptance checks. Use live mode to exclude synthetic object evidence.
 - **Sources / validation:** [MCP-only testing and production checks](https://github.com/mattdomingo/speedhacks/pull/3), [smoke instructions](docs/object-memory.md#mcp-smoke-test), [dated validation](docs/object-memory-validation.md).
+
+### DEC-010 — Google digital memory: synced copy with in-request live fallback
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 2.
+- **Decision:** Connect one Google account through the OAuth web-server flow with PKCE and single-use state (`backend/digital/google.mjs`, `routes.mjs`), read-only `calendar.readonly` and `gmail.readonly` scopes, and an AES-256-GCM encrypted refresh token. Sync calendar (−7/+60 days) and recent mail into the shared evidence store, tagged with `origin` and a `ref` link in the payload. Tools answer from the store while the copy is fresh, and otherwise call Google inside the request under one short deadline (`GOOGLE_LIVE_TIMEOUT_MS`, 1.5 s). Vercel Cron syncs daily; long-running servers also sync on a timer. Google tables live in `backend/digital/store-{sqlite,postgres}.mjs` and `schema.sql`; the `evidence` table is unchanged.
+- **Reason and consequences:** Phone calls need fast answers, so the store is the primary source; live calls cover stale copies and uncovered dates without post-response work (DEC-004). A failed or expired lookup with nothing stored is an error, never "no plans" (DEC-005). `gmail.readonly` is the narrowest scope that allows search; both Gmail scopes are restricted, so the app stays in Google's Testing mode, where refresh tokens expire after 7 days. Live mail search is limited to `GMAIL_SYNC_QUERY`. Sparta Worlds were not wired because configurable Google endpoints would also redirect OAuth tokens.
+- **Sources / validation:** [PR #1](https://github.com/mattdomingo/speedhacks/pull/1); `backend/test/google.test.mjs` against an in-process fake Google on SQLite and Postgres. A real Google account is not yet validated.
+
+### DEC-011 — Optional caller PIN as a second factor
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineers 1 and 2.
+- **Decision:** With `CALLER_PIN` set, every memory tool also requires an optional `pin` argument (`contracts/index.mjs`), compared in constant time (`backend/voice/pin.mjs`). Five wrong attempts lock that caller number out for 15 minutes, keyed by a hash of the number in `caller_pin_failure`. The voice instructions tell the agent to ask for the PIN and never say it aloud.
+- **Reason and consequences:** Caller ID can be spoofed and Dial offers no caller verification, so once real Gmail and Calendar are connected the allowlist alone exposes them; an adversarial review rated this the one high-severity issue. The PIN is spoken and may appear in Dial transcripts. It is opt-in so existing demos keep working; set it before connecting real data. It does not replace verified identity or per-user storage (DEC-005).
+- **Sources / validation:** [PR #1](https://github.com/mattdomingo/speedhacks/pull/1); PIN lockout test in `backend/test/dial.test.mjs`.
+
+### DEC-012 — Keewano analytics without personal content
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 2.
+- **Decision:** When `KEEWANO_API_KEY` is set, report per-tool name, latency, evidence count, empty answers, evidence origin, rejected-caller reasons, sync results and Dial event types through `@keewano/node-sdk` (`backend/analytics/`). Callers are HMAC-derived UUIDs; rejected callers share one anonymous ID. Without a persistent disk, batches stay in memory and flush within about two seconds.
+- **Reason and consequences:** Sponsor tooling for product insight (which questions go unanswered) that stays off the evidence path and never blocks a call. Phone numbers, names, message text, calendar titles and object descriptions are never sent. The SDK has no flush call, so a suspended instance can lose the last seconds of events. Event IDs are positional: append to `keewano.events.json`, never reorder; CI checks the generated module.
+- **Sources / validation:** [PR #1](https://github.com/mattdomingo/speedhacks/pull/1); `backend/test/analytics.test.mjs` asserts no personal content.
+
+### DEC-013 — Signed Dial webhooks and configurable caller headers
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 1, implemented by Engineer 2.
+- **Decision:** `POST /webhooks/dial` verifies `X-Dial-Signature` (HMAC-SHA256 over `t.rawBody`, 300-second window) against `DIAL_WEBHOOK_SECRET`, reading the raw body from the request stream, stores each event once in `dial_event`, and prunes it after `DIAL_EVENT_RETENTION_DAYS` on delivery and on the daily cron. Caller and direction header names are configurable (`DIAL_CALLER_HEADER`, `DIAL_DIRECTION_HEADER`) with the scaffold's names as defaults; `DIAL_LOG_HEADERS=true` logs header names with redacted values.
+- **Reason and consequences:** Public Dial sources confirm the webhook signature scheme (from `@getdial/sdk`) but not the Context MCP caller headers, so the first real call must confirm them. Transcripts are personal data, hence the retention bound. Reading the stream keeps signatures valid both with and without Vercel's request helpers.
+- **Sources / validation:** [PR #1](https://github.com/mattdomingo/speedhacks/pull/1); `backend/test/dial.test.mjs`, including a run behind emulated Vercel request helpers. Header names remain unverified until a live call.
 
 Copy this template for the next decision:
 

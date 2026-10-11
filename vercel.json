@@ -10,7 +10,15 @@
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": { "service": "recall" }
+      "destination": {
+        "service": "recall"
+      }
+    }
+  ],
+  "crons": [
+    {
+      "path": "/cron/google-sync",
+      "schedule": "17 11 * * *"
     }
   ]
 }

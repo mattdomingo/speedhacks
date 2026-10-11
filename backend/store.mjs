@@ -3,6 +3,8 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { sqliteCameraStore } from './physical/store-sqlite.mjs';
+import { sqliteDigitalStore } from './digital/store-sqlite.mjs';
+import { sqliteVoiceStore } from './voice/store-sqlite.mjs';
 
 export function openStore(dataDir) {
   mkdirSync(dataDir, { recursive: true });
@@ -24,6 +26,8 @@ export function openStore(dataDir) {
   return {
     db,
     ...sqliteCameraStore(db),
+    ...sqliteDigitalStore(db),
+    ...sqliteVoiceStore(db),
     put(record) {
       db.prepare('INSERT OR IGNORE INTO evidence VALUES (?, ?, ?, ?)')
         .run(record.id, record.source, record.timestamp, JSON.stringify(record));
