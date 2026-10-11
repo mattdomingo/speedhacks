@@ -194,6 +194,13 @@ The entries below were recorded on 2026-10-11. DEC-001 through DEC-007 summarize
 - **Reason and consequences:** Live testing with `gemini-3.8-flash` hit repeated 503/timeouts and then a long 429 retry window. Three direct requests using the same real image succeeded with stable 3.5 Flash-Lite and found the visible phone and wallet; timed repeats took 1,781 and 1,844 ms. Existing hosted environment overrides need updating and redeployment. During this paused operational switch, clear only the old model's transient retry/candidate state, preserving evidence and usage. Recognition accuracy still requires the physical acceptance procedure.
 - **Sources / validation:** [Gemini model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite), [dated validation](docs/object-memory-validation.md). Alike decision “Use Gemini 3.5 Flash-Lite for Recall camera recognition,” recorded through MCP on October 11.
 
+### DEC-018 — Gate automatic sightings on explicit visibility
+
+- **Date / status / responsible:** 2026-10-11 / Accepted / Engineer 3; requested by the project owner after a live occlusion failure.
+- **Decision:** Require a separate `clear|partially_occluded|unclear` visibility assessment from the vision model. Only two consecutive clear detections may update an automatic memory. Missing visibility on legacy candidates fails closed. Preserve the previous record, time, and photograph through partial views and require two new clear views for recovery. Public MCP and manual-observation contracts remain unchanged.
+- **Reason and consequences:** In the real cap-over-phone test, identity and overlapping boxes stayed stable while the model marked the detection certain and invented an incorrect support relationship. Identity confidence is insufficient evidence of visibility. Two direct calls with the new schema on a real covered-phone image marked it partially occluded even with `uncertain:false`. This remains a model-based check; it is not proof against every occlusion or noisy scene. No new service, dependency, database migration, or image archive is introduced.
+- **Sources / validation:** `backend/physical/vision.mjs`, `backend/physical/confirm.mjs`, and focused SQLite/Postgres regression coverage; [dated validation](docs/object-memory-validation.md).
+
 Copy this template for the next decision:
 
 ```markdown

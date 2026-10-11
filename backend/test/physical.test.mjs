@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { openStore } from '../store.mjs';
 import { createPhysicalMemory } from '../physical/pipeline.mjs';
 
-const keys = { object: 'keys', location: 'beside the mug', bbox: [100, 100, 200, 200], resting: true, uncertain: false };
+const keys = { object: 'keys', location: 'beside the mug', bbox: [100, 100, 200, 200], resting: true, uncertain: false, visibility: 'clear' };
 const config = { GEMINI_API_KEY: 'test-only', VISION_MODEL: 'gemini-3.5-flash-lite' };
 const baseTime = Date.parse('2026-10-11T12:00:00Z');
 
@@ -72,6 +72,31 @@ test('held, occluded, ambiguous and absent detections preserve the last confirme
     }
   }
   assert.equal(Buffer.from(f.store.cameraSnapshot(saved.frameId).jpeg).toString(), 'jpeg-5');
+});
+
+test('occlusion preserves the photo and timestamp; recovery requires two clear views', async t => {
+  const phone = { ...keys, object: 'phone', location: 'on the floor to the right' };
+  let detections = [phone];
+  const f = fixture(t, async () => ({ detections }));
+  for (const seconds of [0, 5]) { f.save(seconds); await f.memory.processLatest(); }
+  const saved = f.store.list('camera')[0];
+  detections = [{ ...phone, visibility: 'partially_occluded', location: 'on top of the cap' }];
+  for (const seconds of [10, 15]) {
+    f.save(seconds);
+    assert.equal((await f.memory.processLatest()).confirmed, 0);
+    assert.deepEqual(f.store.list('camera')[0], saved);
+    assert.equal(Buffer.from(f.store.cameraSnapshot(saved.frameId).jpeg).toString(), 'jpeg-5');
+  }
+  detections = [phone];
+  f.save(20);
+  assert.equal((await f.memory.processLatest()).confirmed, 0);
+  assert.deepEqual(f.store.list('camera')[0], saved);
+  f.save(25);
+  assert.equal((await f.memory.processLatest()).confirmed, 1);
+  const recovered = f.store.list('camera')[0];
+  assert.equal(recovered.location, phone.location);
+  assert.equal(recovered.timestamp, new Date(baseTime + 25_000).toISOString());
+  assert.equal(Buffer.from(f.store.cameraSnapshot(recovered.frameId).jpeg).toString(), 'jpeg-25');
 });
 
 test('concurrent requests share one lease and analyze only the newest pending frame', async t => {

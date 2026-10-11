@@ -27,7 +27,7 @@ One monorepo, two running processes: a hosted Node/Express backend and a Python 
 
 Dial owns speech recognition, conversation, and speech playback. Its managed voice agent calls the backend's MCP tools during the call. The camera collects evidence before a call; object lookup retrieves historical observations rather than describing only the current room.
 
-The camera makes outbound HTTPS requests, requiring no public laptop port. The backend retains the latest raw frame plus one confirmed record/photo per category. It requires two matching, certain sightings of a resting object before updating memory. Missing objects preserve the previous location and capture time. See the [object-memory runbook and phone handoff](docs/object-memory.md).
+The camera makes outbound HTTPS requests, requiring no public laptop port. The backend retains the latest raw frame plus one confirmed record/photo per category. It requires two matching, certain sightings of a resting object, both assessed as clearly visible, before updating memory. Missing or partially occluded objects preserve the previous location and capture time. See the [object-memory runbook and phone handoff](docs/object-memory.md).
 
 ## Ownership
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createGeminiAnalyzer, parseVision } from '../physical/vision.mjs';
 import { confirmedDetections } from '../physical/confirm.mjs';
 
-const keys = { object: 'keys', location: 'beside the mug', bbox: [100, 100, 200, 200], resting: true, uncertain: false };
+const keys = { object: 'keys', location: 'beside the mug', bbox: [100, 100, 200, 200], resting: true, uncertain: false, visibility: 'clear' };
 const frame = (second, detections = [keys]) => ({ frameId: String(second), timestamp: new Date(second * 1000).toISOString(), detections });
 const reply = detections => ({ status: 'completed', steps: [{ type: 'model_output', content: [
   { type: 'text', text: JSON.stringify({ detections }) },
@@ -27,9 +27,20 @@ test('held, uncertain, missing and duplicate objects never confirm', () => {
   }
 });
 
+test('recognizable occluded objects and legacy candidates cannot confirm, even with uncertainty false', () => {
+  for (const visibility of ['partially_occluded', 'unclear', undefined]) {
+    const obscured = { ...keys, visibility, location: 'on top of a cap' };
+    assert.deepEqual(confirmedDetections(frame(1, [obscured]), frame(6, [obscured])), []);
+    assert.deepEqual(confirmedDetections(frame(1), frame(6, [obscured])), []);
+    assert.deepEqual(confirmedDetections(frame(1, [obscured]), frame(6)), []);
+  }
+  assert.equal(confirmedDetections(frame(6), frame(11)).length, 1);
+});
+
 test('vision rejects malformed shapes, unsupported labels and impossible boxes', () => {
   for (const item of [{ ...keys, object: 'cup' }, { ...keys, bbox: [2, 2, 1, 1] },
-    { ...keys, bbox: [0, 0, 1001, 100] }, { ...keys, uncertain: undefined }, { ...keys, location: '' }]) {
+    { ...keys, bbox: [0, 0, 1001, 100] }, { ...keys, uncertain: undefined }, { ...keys, location: '' },
+    { ...keys, visibility: undefined }, { ...keys, visibility: 'probably visible' }]) {
     assert.throws(() => parseVision({ detections: [item] }));
   }
 });

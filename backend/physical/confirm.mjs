@@ -11,7 +11,9 @@ export function confirmedDetections(previous, current) {
   return current.detections.filter(item => {
     const before = previous.detections.filter(other => other.object === item.object);
     const now = current.detections.filter(other => other.object === item.object);
-    return before.length === 1 && now.length === 1 && item.resting && !item.uncertain &&
+    // Missing visibility on an older stored candidate must also fail closed.
+    return before.length === 1 && now.length === 1 && item.visibility === 'clear' &&
+      before[0].visibility === 'clear' && item.resting && !item.uncertain &&
       before[0].resting && !before[0].uncertain && overlap(item.bbox, before[0].bbox) >= 0.5;
   });
 }
