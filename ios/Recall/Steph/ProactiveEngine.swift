@@ -320,12 +320,18 @@ enum Notifications {
         return content
     }
 
-    static func schedule(_ reminder: Reminder, now: Date = Date()) async {
+    @discardableResult
+    static func schedule(_ reminder: Reminder, now: Date = Date()) async -> Bool {
         let delay = max(1, reminder.fireDate.timeIntervalSince(now))
         let request = UNNotificationRequest(identifier: ProactiveEngine.notificationPrefix + reminder.id,
                                             content: content(for: reminder),
                                             trigger: UNTimeIntervalNotificationTrigger(timeInterval: delay, repeats: false))
-        try? await UNUserNotificationCenter.current().add(request)
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Replaces Steph's not-yet-delivered reminders with a fresh plan.

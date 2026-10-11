@@ -4,6 +4,7 @@
   "description": "Phone memory assistant hackathon scaffold",
   "scripts": {
     "setup": "node scripts/setup.mjs",
+    "demo:medicine": "node scripts/demo-medicine-reminder.mjs",
     "start": "node --env-file-if-exists=.env backend/index.mjs",
     "dev": "node --watch --env-file-if-exists=.env backend/index.mjs",
     "camera": "node --env-file-if-exists=.env scripts/camera.mjs",

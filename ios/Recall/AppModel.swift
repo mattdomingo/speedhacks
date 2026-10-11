@@ -311,19 +311,30 @@ final class AppModel {
         }
     }
 
-    /// Demo: show Priya's card now, or buzz the phone after a delay.
-    func triggerDemoReminder(after delay: TimeInterval? = nil) {
+    /// Demo: show a seeded reminder now, or buzz the phone after a delay.
+    func triggerDemoReminder(medicine: Bool = false, after delay: TimeInterval? = nil) {
         Task {
             if !demoMode { await setDemoMode(true) }
-            guard var reminder = await proactive.demoReminder() else {
+            let selected = medicine ? DemoSeed.medicineReminder() : await proactive.demoReminder()
+            guard var reminder = selected else {
                 show(notice: "I couldn't find the demo coffee with Priya.")
                 return
             }
-            if let delay {
-                reminder.fireDate = Date().addingTimeInterval(delay)
-                try? await store.save(reminder: reminder)
-                _ = await Notifications.requestAuthorization()
-                await Notifications.schedule(reminder)
+            if delay != nil, !(await Notifications.requestAuthorization()) {
+                show(notice: "Allow notifications in Settings, or show the demo reminder now.")
+                return
+            }
+            if let delay { reminder.fireDate = Date().addingTimeInterval(delay) }
+            do {
+                try await store.save(reminder: reminder)
+            } catch {
+                show(notice: "I couldn't save the demo reminder. Please try again.")
+                return
+            }
+            if delay != nil {
+                if !(await Notifications.schedule(reminder)) {
+                    show(notice: "I couldn't schedule the demo reminder. Please try again.")
+                }
             } else {
                 show(reminder)
             }
