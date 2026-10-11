@@ -4,6 +4,7 @@ import { openPostgresStore } from './postgres.mjs';
 import { seedDemo } from './demo.mjs';
 import { createApp } from './app.mjs';
 import { createGoogle } from './digital/google.mjs';
+import { ownerMemorySink } from './brain/memory.mjs';
 import { createAnalytics } from './analytics/index.mjs';
 
 const config = readConfig();
@@ -12,7 +13,7 @@ const analytics = createAnalytics(config);
 if (config.GOOGLE_API_BASE_URL || config.GOOGLE_OAUTH_BASE_URL) {
   console.warn('WARNING: Google endpoints point at a local mock (Sparta World); this is not real Google data.');
 }
-const google = createGoogle({ config, store,
+const google = createGoogle({ config, store, memories: ownerMemorySink(store),
   onSync: results => analytics.sync({ caller: config.DEMO_CALLER_NUMBER, results }) });
 if (config.DEMO_MODE === 'true') await seedDemo(store, new Date(), await google.timeZone());
 const stopSync = google.start();

@@ -186,3 +186,16 @@ test('settings change by asking: "Don\'t call me before 9" moves the end of quie
   assert.equal(me.settings.quiet_end, '09:00');
   assert.equal((await f.api('/v1/diagnostics', { token })).body.quiet_hours.end, '09:00');
 });
+
+test('Google sources write into the household owner\'s memories; with no owner they are not filed', async t => {
+  const { ownerMemorySink } = await import('../brain/memory.mjs');
+  const f = await fixture(t);
+  const sink = ownerMemorySink(f.store, () => START);
+  const record = { source_ref: 'gcontact:1', type: 'person', summary: 'Sam Chen, brother', people: ['Sam Chen'], source: 'google-contacts', confidence: 1 };
+  assert.equal(await sink.replaceSource('google-contacts', [record]), 0);
+  const { user } = await signIn(f, { phone: ADA });
+  assert.equal(await sink.replaceSource('google-contacts', [record]), 1);
+  assert.equal((await f.store.memoryCandidates(user.id, { words: ['sam'] }))[0].summary, 'Sam Chen, brother');
+  await sink.deleteSource('google-');
+  assert.equal(await f.store.memoryCount(user.id), 0);
+});

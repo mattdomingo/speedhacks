@@ -5,11 +5,12 @@ import { handleMcp } from './voice/mcp.mjs';
 import { createPhysicalMemory } from './physical/pipeline.mjs';
 import { frameId } from './physical/state.mjs';
 import { createGoogle } from './digital/google.mjs';
-import { cronRoutes, googleRoutes } from './digital/routes.mjs';
+import { cronRoutes, googleRoutes, googleWebhookRoutes } from './digital/routes.mjs';
 import { describeHeaders, dialWebhook } from './voice/webhooks.mjs';
 import { createAnalytics } from './analytics/index.mjs';
 import { createSteph } from './brain/index.mjs';
 import { stephRoutes as brainRoutes } from './brain/routes.mjs';
+import { ownerMemorySink } from './brain/memory.mjs';
 import { STEPH_PATHS, stephGate, stephRoutes } from './steph/routes.mjs';
 
 function bearer(token) {
@@ -33,7 +34,7 @@ function validateTimestamp(timestamp) {
 }
 
 export function createApp(config, store, physicalOptions, {
-  google = createGoogle({ config, store }), analytics = createAnalytics({}), steph,
+  google = createGoogle({ config, store, memories: ownerMemorySink(store) }), analytics = createAnalytics({}), steph,
   dial, claude: brainClaude, apns, now, fetch: brainFetch,
 } = {}) {
   const app = express();
@@ -46,6 +47,7 @@ export function createApp(config, store, physicalOptions, {
   app.get('/health', (_req, res) => res.json({ ok: true, demo: config.DEMO_MODE === 'true' }));
   // Signed by Dial over the raw body, so it is mounted before the JSON parser.
   app.post('/webhooks/dial', dialWebhook(config, store, analytics, event => brain.enabled ? brain.onDialEvent(event) : false));
+  app.use('/webhooks/google', googleWebhookRoutes(google));
   app.use('/mcp', bearer(config.DIAL_MCP_TOKEN));
   app.use('/camera', bearer(config.CAMERA_TOKEN));
   app.use('/camera', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
