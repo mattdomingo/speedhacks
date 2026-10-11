@@ -14,6 +14,7 @@ import { createCaregiver } from './voice/caregiver.mjs';
 import { createDialEvents } from './voice/events.mjs';
 import { identifyCaller, patientsFrom, scopedStore } from './voice/patients.mjs';
 import { STEPH_PATHS, stephGate, stephRoutes } from './steph/routes.mjs';
+import { APP_MEMORY_PATHS, appMemoryAuth, appMemoryRoutes } from './steph/app-memory.mjs';
 import { createHealth } from './health.mjs';
 import { safeMessage } from './log.mjs';
 
@@ -38,7 +39,7 @@ function validateTimestamp(timestamp) {
 }
 
 export function createApp(config, store, physicalOptions, {
-  google = createGoogle({ config, store }), analytics = createAnalytics({}), dial, now, steph, healthChecks,
+  google = createGoogle({ config, store }), analytics = createAnalytics({}), dial, now, steph, appMemory, healthChecks,
 } = {}) {
   const app = express();
   const physical = createPhysicalMemory(config, store, physicalOptions);
@@ -62,6 +63,7 @@ export function createApp(config, store, physicalOptions, {
   app.use('/camera', bearer(config.CAMERA_TOKEN));
   app.use('/camera', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use(STEPH_PATHS, stephGate(config), bearer(config.RECALL_APP_TOKEN));
+  app.use(APP_MEMORY_PATHS, appMemoryAuth(config, patients));
   app.use(express.json({ limit: '1mb' }));
   app.use('/google', googleRoutes(google, bearer(config.ADMIN_TOKEN)));
   // Vercel Cron, every minute: deliver due reminders and settle calls whose webhook never arrived.
@@ -76,6 +78,7 @@ export function createApp(config, store, physicalOptions, {
   });
   app.use('/cron', cronRoutes(google, bearer(config.CRON_SECRET), { store, retentionDays: config.DIAL_EVENT_RETENTION_DAYS }));
   app.use(stephRoutes(config, steph));
+  app.use(appMemoryRoutes(config, store, { ...steph, ...appMemory, google, patients, now }));
 
   app.all('/mcp', async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();

@@ -82,6 +82,7 @@ final class MemoryRecord {
     }
 
     func update(from memory: Memory) {
+        let textChanged = snapshot.embeddingText != memory.embeddingText
         typeRaw = memory.type.rawValue
         summary = memory.summary
         detail = memory.detail
@@ -95,10 +96,13 @@ final class MemoryRecord {
         longitude = memory.longitude
         tags = memory.tags
         followUp = memory.followUp
-        // Keep learned confidence and embeddings unless the text changed.
+        // Keep learned confidence; re-embed changed text unless a new vector is supplied.
         if memory.embedding != nil {
             embedding = memory.embedding.map(Vector.data)
             embeddingModel = memory.embeddingModel
+        } else if textChanged {
+            embedding = nil
+            embeddingModel = nil
         }
     }
 

@@ -34,6 +34,11 @@ final class AppModel {
     private(set) var memoryCount = 0
     private(set) var demoMode: Bool
     var typedText = ""
+    private(set) var sharedMemoryConnected = false
+    private(set) var connectionStatus = "Memories on this phone only"
+    @ObservationIgnored private var memoryCredentials: MemoryCredentials?
+    @ObservationIgnored private var answerGeneration = UUID()
+    @ObservationIgnored private var connectionGeneration = UUID()
     /// Shown briefly under the orb when something needs the person's attention.
     private(set) var notice: String?
 
@@ -78,6 +83,12 @@ final class AppModel {
         demoMode = defaults.bool(forKey: "demoMode")
         phase = Phase(rawValue: defaults.string(forKey: "phase") ?? "") ?? .signUp
         location.onLeftHome = { [weak self] in Task { await self?.leftHome() } }
+        // Tests and demo walkthroughs must never use a real saved device credential.
+        if !inMemory {
+            memoryCredentials = MemoryConnection.load(endpoint: StephClient.shared.baseURL)
+            sharedMemoryConnected = memoryCredentials != nil
+            if sharedMemoryConnected { connectionStatus = "Connected memories + this phone" }
+        }
     }
 
     var activeLevel: AudioLevel? {
@@ -178,9 +189,10 @@ final class AppModel {
         }
     }
 
-    /// Ask flow: retrieve the top memories → Steph (backend Claude, or the
-    /// on-device fallback) → card → spoken answer.
+    /// Retrieve local memories, then query connected sources when paired.
     func answer(_ question: String, keepExclusions: Bool = false) async {
+        let generation = UUID()
+        answerGeneration = generation
         if !keepExclusions { excluded = [] }
         withAnimation(Theme.rise) { stage = .thinking(question: question) }
         orbState = .thinking
@@ -189,38 +201,68 @@ final class AppModel {
         let retrieval = await retriever.retrieve(question, demoOnly: demoMode, excluding: excluded)
         var person = retrieval.mentionedPeople.first
         var personMemories = person == nil ? [] : (try? await store.memories(forPerson: person!)) ?? []
-        personMemories = personMemories.filter { (!demoMode || $0.isDemo) && !excluded.contains($0.id) }
-        let pool = Self.unique(retrieval.memories.map(\.memory) + personMemories.prefix(8))
+        guard answerGeneration == generation, case .thinking(let current) = stage, current == question else { return }
+        let period = Retriever.timeRange(in: question, now: started)
+        personMemories = personMemories.filter {
+            $0.isDemo == demoMode && !excluded.contains($0.id) && Retriever.matchesTimeRange($0, range: period)
+        }
+        var pool = Self.unique(retrieval.memories.map(\.memory) + personMemories.prefix(8))
 
         var reply: StephAnswer
-        if client.isConfigured, let remote = try? await client.ask(question: question, memories: Array(pool.prefix(20))) {
-            reply = remote
+        if !demoMode, let credentials = memoryCredentials {
+            do {
+                let remote = try await client.askConnected(question: question, memories: Array(pool.prefix(20)),
+                                                           credentials: credentials, excluding: excluded)
+                guard answerGeneration == generation, case .thinking(let current) = stage, current == question else { return }
+                let shared = try remote.memories()
+                pool = Self.unique(shared + pool)
+                reply = remote.answer
+                connectionStatus = "Connected memories + this phone"
+            } catch {
+                guard answerGeneration == generation, case .thinking(let current) = stage, current == question else { return }
+                connectionStatus = StephClient.connectionMessage(for: error)
+                let card = CardContent.answer(AnswerCardModel(kind: .answer, answer: connectionStatus,
+                    closest: nil, howIKnow: nil, sourceLine: "LOOKUP UNAVAILABLE", buttons: ["Okay"], memoryIDs: []))
+                await present(.card(question: question, card: card), speaking: card.spokenText)
+                return
+            }
+        } else if client.isConfigured {
+            do {
+                reply = try await client.ask(question: question, memories: Array(pool.prefix(20)))
+            } catch {
+                guard answerGeneration == generation, case .thinking(let current) = stage, current == question else { return }
+                reply = LocalBrain.answer(question: question, retrieval: retrieval, personMemories: personMemories)
+                show(notice: "Cloud answers unavailable. Using memories on this phone only.")
+            }
         } else {
             reply = LocalBrain.answer(question: question, retrieval: retrieval, personMemories: personMemories)
+            if !demoMode { show(notice: "Using this phone only. Connect shared memories in Settings.") }
         }
+        guard answerGeneration == generation else { return }
         if reply.cardType == .person, person == nil {
             person = await personBehind(reply.memoryIDs, pool: pool)
-            if let person { personMemories = (try? await store.memories(forPerson: person))?.filter { !demoMode || $0.isDemo } ?? [] }
+            if let person { personMemories = (try? await store.memories(forPerson: person))?.filter { $0.isDemo == demoMode && !excluded.contains($0.id) && Retriever.matchesTimeRange($0, range: period) } ?? [] }
         }
         let card = CardBuilder.card(for: reply, question: question, pool: pool, person: person, personMemories: personMemories)
 
         // Let the orb visibly think for a beat, even when the answer is instant.
         let elapsed = Date().timeIntervalSince(started)
         if elapsed < 0.7 { try? await Task.sleep(for: .seconds(0.7 - elapsed)) }
-        guard case .thinking(let current) = stage, current == question else { return }
+        guard answerGeneration == generation, case .thinking(let current) = stage, current == question else { return }
         await present(.card(question: question, card: card), speaking: card.spokenText)
     }
 
     private func personBehind(_ ids: [String], pool: [Memory]) async -> Person? {
-        let people = ((try? await store.people()) ?? []).filter { !demoMode || $0.isDemo }
+        let people = ((try? await store.people()) ?? []).filter { $0.isDemo == demoMode }
         let names = pool.filter { ids.contains($0.id) }.flatMap(\.people)
         return names.lazy.compactMap { name in people.first { $0.names.contains(name.lowercased()) } }.first
     }
 
     /// Anything said or typed that isn't a question becomes a memory.
     func remember(_ text: String) async {
+        answerGeneration = UUID()
         let summary = TextTools.cleanedNote(text)
-        let people = ((try? await store.people()) ?? []).filter { !demoMode || $0.isDemo }
+        let people = ((try? await store.people()) ?? []).filter { $0.isDemo == demoMode }
         let mentioned = TextTools.mentionedPeople(in: summary, people: people)
         var tags: [String] = []
         if TextTools.isPromise(summary) { tags.append(MemoryTag.promise) }
@@ -292,6 +334,7 @@ final class AppModel {
     }
 
     func dismiss() {
+        answerGeneration = UUID()
         voice.stop()
         withAnimation(Theme.rise) { stage = .idle }
         orbState = .idle
@@ -349,7 +392,35 @@ final class AppModel {
 
     // MARK: Demo mode and settings
 
+    func connectMemories(token: String, pin: String) async throws {
+        let attempt = UUID()
+        connectionGeneration = attempt
+        let token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pin = pin.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard token.count >= 32, let endpoint = client.baseURL else { throw StephClient.ClientError.notConfigured }
+        let credentials = MemoryCredentials(token: token, pin: pin, endpoint: endpoint.absoluteString)
+        try await client.checkConnection(credentials)
+        guard connectionGeneration == attempt, !Task.isCancelled else { throw CancellationError() }
+        try MemoryConnection.save(credentials)
+        dismiss()
+        memoryCredentials = credentials
+        sharedMemoryConnected = true
+        connectionStatus = "Connected memories + this phone"
+        if demoMode { await setDemoMode(false) }
+    }
+
+    func disconnectMemories() throws {
+        connectionGeneration = UUID()
+        try MemoryConnection.remove()
+        dismiss()
+        memoryCredentials = nil
+        sharedMemoryConnected = false
+        connectionStatus = "Memories on this phone only"
+    }
+
     func setDemoMode(_ on: Bool) async {
+        connectionGeneration = UUID()
+        dismiss()
         demoMode = on
         UserDefaults.standard.set(on, forKey: "demoMode")
         if on {
@@ -376,6 +447,8 @@ final class AppModel {
     }
 
     func startOver() {
+        do { try disconnectMemories() }
+        catch { show(notice: "Could not remove the saved connection. Please try again."); return }
         Task {
             dismiss()
             try? await store.eraseEverything()

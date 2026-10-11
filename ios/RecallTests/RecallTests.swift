@@ -15,6 +15,17 @@ final class TextToolsTests: XCTestCase {
         XCTAssertFalse(TextTools.isQuestion("Remember that I parked on level 3"))
     }
 
+    func testAddressedQuestionsRemainQuestionsWithoutPunctuation() {
+        for question in ["Hey Steph, where are my keys", "Steph where is my wallet", "Hello Steph, please find my passport",
+                         "Read my recent emails", "Please Steph list my appointments", "Search my emails for lunch",
+                         "Check my calendar", "Look up my keys"] {
+            XCTAssertTrue(TextTools.isQuestion(question), question)
+        }
+        for note in ["Hey Steph, remember that my keys are on the counter", "Steph, I put my passport in the drawer"] {
+            XCTAssertFalse(TextTools.isQuestion(note), note)
+        }
+    }
+
     func testSecondPerson() {
         XCTAssertEqual(TextTools.secondPerson("I put my passport in the desk drawer."), "You put your passport in the desk drawer.")
         XCTAssertEqual(TextTools.secondPerson("Your keys are on the counter."), "Your keys are on the counter.")
@@ -78,6 +89,63 @@ final class RetrieverTests: XCTestCase {
         XCTAssertEqual(ranked.first?.memory.id, "demo-note-priya-mom")
     }
 
+    func testDateConstraintRejectsOutsideEvidenceAndEndBoundary() throws {
+        var local = Calendar(identifier: .gregorian)
+        local.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let date = local.date(from: DateComponents(year: 2026, month: 10, day: 11, hour: 13))!
+        let yesterday = try XCTUnwrap(Retriever.timeRange(in: "yesterday", now: date, calendar: local))
+        let old = Memory(id: "old", type: .note, summary: "Your keys are in the desk drawer.",
+                         timestamp: date.addingTimeInterval(-30 * 86_400), source: "you", confidence: 1)
+        let matching = Memory(id: "matching", type: .note, summary: "Your keys are on the counter.",
+                              timestamp: yesterday.start, source: "you", confidence: 1)
+        let boundary = Memory(id: "boundary", type: .note, summary: "Your keys are in your bag.",
+                              timestamp: yesterday.end, source: "you", confidence: 1)
+        let result = Retriever.rank(question: "Where were my keys yesterday?", memories: [old, matching, boundary],
+                                    people: [], queryVectors: [:], now: date, calendar: local)
+        XCTAssertEqual(result.map(\.memory.id), ["matching"])
+        XCTAssertTrue(Retriever.rank(question: "Where were my keys yesterday?", memories: [old, boundary],
+                                     people: [], queryVectors: [:], now: date, calendar: local).isEmpty)
+    }
+
+    func testRelativeDaysRespectDaylightSavingChanges() throws {
+        var local = Calendar(identifier: .gregorian)
+        local.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        for (month, day, hours) in [(3, 8, 23), (11, 1, 25)] {
+            let date = local.date(from: DateComponents(year: 2026, month: month, day: day, hour: 12))!
+            let today = try XCTUnwrap(Retriever.timeRange(in: "today", now: date, calendar: local))
+            XCTAssertEqual(today.duration, Double(hours * 3600))
+            let tomorrow = try XCTUnwrap(Retriever.timeRange(in: "tomorrow", now: date, calendar: local))
+            let yesterday = try XCTUnwrap(Retriever.timeRange(in: "yesterday", now: date, calendar: local))
+            XCTAssertEqual(today.end, tomorrow.start)
+            XCTAssertEqual(yesterday.end, today.start)
+            XCTAssertEqual(local.component(.hour, from: tomorrow.start), 0)
+        }
+    }
+
+    func testLastWeekUsesPreviousCalendarWeek() throws {
+        var local = Calendar(identifier: .gregorian)
+        local.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        local.firstWeekday = 2
+        let date = local.date(from: DateComponents(year: 2026, month: 10, day: 11, hour: 13))!
+        let last = try XCTUnwrap(Retriever.timeRange(in: "What happened last week?", now: date, calendar: local))
+        XCTAssertEqual(last.start, local.date(from: DateComponents(year: 2026, month: 9, day: 28)))
+        XCTAssertEqual(last.end, local.date(from: DateComponents(year: 2026, month: 10, day: 5)))
+        let this = try XCTUnwrap(Retriever.timeRange(in: "this week", now: date, calendar: local))
+        let next = try XCTUnwrap(Retriever.timeRange(in: "next week", now: date, calendar: local))
+        XCTAssertEqual(last.end, this.start)
+        XCTAssertEqual(this.end, next.start)
+    }
+
+    func testDateWindowKeepsOverlappingCalendarEvents() throws {
+        let range = try XCTUnwrap(Retriever.timeRange(in: "today", now: now))
+        let event = Memory(id: "trip", type: .event, summary: "Trip", timestamp: range.start.addingTimeInterval(-3600),
+                           endDate: range.start.addingTimeInterval(3600), source: "calendar")
+        XCTAssertTrue(Retriever.matchesTimeRange(event, range: range))
+        var ended = event
+        ended.endDate = range.start
+        XCTAssertFalse(Retriever.matchesTimeRange(ended, range: range))
+    }
+
     func testTimeRange() {
         let range = Retriever.timeRange(in: "what did I do today", now: now)
         XCTAssertNotNil(range)
@@ -107,6 +175,68 @@ final class LocalBrainTests: XCTestCase {
         let answer = LocalBrain.answer(question: "Who's Sam again?", retrieval: retrieval("Who's Sam again?"))
         XCTAssertEqual(answer.cardType, .person)
         XCTAssertTrue(answer.answer.hasPrefix("Sam Chen is your friend."))
+    }
+
+    func testSpecificPersonQuestionAnswersTheMatchingFact() {
+        let priya = Person(id: "priya", name: "Priya")
+        let fact = Memory(id: "surgery", type: .note, summary: "Priya said her mother had surgery.", people: ["Priya"],
+                          timestamp: now, source: "you")
+        let question = "What did Priya say about her mother?"
+        let ranked = Retriever.rank(question: question, memories: [fact], people: [priya], queryVectors: [:], now: now)
+        let result = RetrievalResult(question: question, mentionedPeople: [priya], memories: ranked)
+        let answer = LocalBrain.answer(question: question, retrieval: result, personMemories: [fact])
+        XCTAssertEqual(answer.cardType, .answer)
+        XCTAssertEqual(answer.memoryIDs, [fact.id])
+        XCTAssertEqual(answer.answer, fact.summary)
+        XCTAssertFalse(TextTools.isPersonProfileQuestion("Who is Priya meeting?", person: priya))
+        XCTAssertTrue(TextTools.isPersonProfileQuestion("Hey Steph, tell me about Priya", person: priya))
+    }
+
+    func testAppointmentFallbackIncludesAnswerFromCalendarNotes() {
+        let question = "What should I bring to the appointment?"
+        let event = Memory(id: "appointment", type: .event, summary: "Doctor appointment",
+                           detail: "Bring your insurance card.", timestamp: now, source: "calendar")
+        let ranked = Retriever.rank(question: question, memories: [event], people: [], queryVectors: [:], now: now)
+        let result = RetrievalResult(question: question, mentionedPeople: [], memories: ranked)
+        let answer = LocalBrain.answer(question: question, retrieval: result)
+        XCTAssertEqual(answer.answer, "Doctor appointment. Bring your insurance card.")
+        XCTAssertEqual(answer.memoryIDs, [event.id])
+    }
+
+    func testFallbackBoundsNoteDetailsAndDoesNotReadPhotoOCR() {
+        let detail = String(repeating: "sensitive OCR ", count: 100)
+        for type in [MemoryType.note, .photo] {
+            let memory = Memory(id: "keys", type: type, summary: "Your keys are on the counter.", detail: detail,
+                                timestamp: now, source: type == .photo ? "photo" : "you")
+            let question = "Where are my keys?"
+            let ranked = Retriever.rank(question: question, memories: [memory], people: [], queryVectors: [:], now: now)
+            let result = RetrievalResult(question: question, mentionedPeople: [], memories: ranked)
+            let answer = LocalBrain.answer(question: question, retrieval: result)
+            if type == .photo {
+                XCTAssertEqual(answer.answer, "On the counter.")
+            } else {
+                XCTAssertTrue(answer.answer.contains("Sensitive OCR"))
+                XCTAssertLessThanOrEqual(answer.answer.count, memory.summary.count + 301)
+            }
+        }
+    }
+
+    func testMissingRequestedDateDoesNotAnswerFromAnotherDay() {
+        let question = "Where were my keys yesterday?"
+        let old = Memory(id: "old", type: .note, summary: "Your keys are in the drawer.",
+                         timestamp: now.addingTimeInterval(-30 * 86_400), source: "you")
+        let ranked = Retriever.rank(question: question, memories: [old], people: [], queryVectors: [:], now: now)
+        let result = RetrievalResult(question: question, mentionedPeople: [], memories: ranked)
+        let answer = LocalBrain.answer(question: question, retrieval: result)
+        XCTAssertTrue(answer.isUnsure)
+        XCTAssertTrue(answer.memoryIDs.isEmpty)
+    }
+
+    func testAddressedWhereQuestionKeepsLocationAnswer() {
+        let question = "Hey Steph, where are my keys"
+        let answer = LocalBrain.answer(question: question, retrieval: retrieval(question))
+        XCTAssertEqual(answer.answer, "On the kitchen counter, next to the fruit bowl.")
+        XCTAssertEqual(answer.buttons, ["Found them!", "Not there"])
     }
 
     func testUnknownSaysNotSure() {
@@ -207,6 +337,40 @@ final class ProactiveEngineTests: XCTestCase {
         XCTAssertEqual(calendar.component(.hour, from: candidate.fireDate), 14)
     }
 
+    func testManualPriyaDemoWorksAfterCoffeeWithoutChangingRealPlanning() async throws {
+        let store = MemoryStore(modelContainer: try MemoryStore.makeContainer(inMemory: true))
+        for person in DemoSeed.people { try await store.upsert(person: person) }
+        try await store.upsert(memories)
+        let later = calendar.date(bySettingHour: 16, minute: 18, second: 0, of: now)!
+        let livePerson = Person(id: "live-priya", name: "Priya")
+        try await store.upsert(person: livePerson)
+        try await store.upsert([
+            Memory(id: "live-coffee", type: .event, summary: "Coffee with Priya", people: ["Priya"],
+                   timestamp: later.addingTimeInterval(3600), source: "calendar"),
+            Memory(id: "live-note", type: .note, summary: "Private live fact", people: ["Priya"],
+                   timestamp: now, source: "you", followUp: "Private live follow-up"),
+        ])
+        let engine = ProactiveEngine(store: store, client: StephClient(baseURL: nil, token: ""), calendar: calendar)
+        let result = await engine.demoReminder(now: later)
+        let reminder = try XCTUnwrap(result)
+        XCTAssertTrue(reminder.isDemo)
+        XCTAssertEqual(reminder.personName, "Priya")
+        XCTAssertEqual(reminder.subtitle, "Planned: Coffee today at 3:00")
+        XCTAssertEqual(reminder.fireDate, later)
+        XCTAssertEqual(reminder.body, "Ask how her mom is doing. She had surgery two weeks ago.")
+        XCTAssertTrue(reminder.memoryIDs.allSatisfy { $0.hasPrefix("demo-") })
+        XCTAssertTrue(ProactiveEngine.meetingCandidates(memories: memories, people: DemoSeed.people,
+                                                         now: later, calendar: calendar, horizon: 86_400).isEmpty)
+        let event = try await store.memories(ids: ["demo-event-priya-coffee"]).first
+        XCTAssertEqual(event?.timestamp, calendar.date(bySettingHour: 15, minute: 0, second: 0, of: now))
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: later)!
+        let nextPreview = await engine.demoReminder(now: nextDay)
+        XCTAssertEqual(nextPreview?.subtitle, "Planned: Coffee yesterday at 3:00")
+        try await store.removeDemoData()
+        let withoutDemo = await engine.demoReminder(now: later)
+        XCTAssertNil(withoutDemo, "Manual demo must never substitute live memories")
+    }
+
     func testQuietHoursMoveToMorning() {
         let event = calendar.date(from: DateComponents(year: 2026, month: 10, day: 12, hour: 8, minute: 30))!
         let fire = ProactiveEngine.fireDate(before: event, now: now, calendar: calendar)
@@ -277,6 +441,55 @@ final class MemoryStoreTests: XCTestCase {
         try await store.removeDemoData()
         let remaining = try await store.count()
         XCTAssertEqual(remaining, 0)
+    }
+
+    func testChangedEmbeddingTextIsReindexedButMetadataKeepsItsVector() async throws {
+        let store = MemoryStore(modelContainer: try MemoryStore.makeContainer(inMemory: true))
+        let original = Memory(id: "event", type: .event, summary: "Planning meeting", detail: "Discuss launch",
+                              timestamp: now, source: "calendar", embedding: [1, 0], embeddingModel: "test")
+        try await store.upsert(original)
+        var metadataOnly = original
+        metadataOnly.embedding = nil
+        metadataOnly.embeddingModel = nil
+        metadataOnly.timestamp = now.addingTimeInterval(3600)
+        try await store.upsert(metadataOnly)
+        let unchanged = try await store.memories(ids: [original.id]).first
+        XCTAssertEqual(unchanged?.embedding, [1, 0])
+        XCTAssertEqual(unchanged?.embeddingModel, "test")
+
+        var changed = metadataOnly
+        changed.detail = "Discuss hiring"
+        try await store.upsert(changed)
+        let updated = try await store.memories(ids: [original.id]).first
+        XCTAssertEqual(updated?.detail, "Discuss hiring")
+        XCTAssertNil(updated?.embedding)
+        XCTAssertNil(updated?.embeddingModel)
+        let pending = try await store.missingEmbeddings(limit: 64)
+        XCTAssertEqual(pending.map(\.id), [original.id])
+
+        changed.embedding = [0, 1]
+        changed.embeddingModel = "replacement"
+        try await store.upsert(changed)
+        let replaced = try await store.memories(ids: [original.id]).first
+        XCTAssertEqual(replaced?.embedding, [0, 1])
+        XCTAssertEqual(replaced?.embeddingModel, "replacement")
+    }
+
+    func testLiveAndDemoRetrievalStaySeparateEvenWhenBothAreStored() async throws {
+        let store = MemoryStore(modelContainer: try MemoryStore.makeContainer(inMemory: true))
+        let demoPerson = Person(id: "demo-sam", name: "Sam", isDemo: true)
+        try await store.upsert(person: demoPerson)
+        let live = Memory(id: "live", type: .note, summary: "Your keys are in your bag.", timestamp: now, source: "you")
+        let demo = Memory(id: "demo", type: .note, summary: "Sam put your keys on the counter.", people: ["Sam"],
+                          timestamp: now, source: "demo", isDemo: true)
+        try await store.upsert([live, demo])
+        let retriever = Retriever(store: store, embedder: ChainedEmbedder(embedders: []))
+        let actual = await retriever.retrieve("Where did Sam put my keys?", now: now, demoOnly: false)
+        XCTAssertEqual(actual.memories.map(\.memory.id), [live.id])
+        XCTAssertTrue(actual.mentionedPeople.isEmpty)
+        let simulated = await retriever.retrieve("Where did Sam put my keys?", now: now, demoOnly: true)
+        XCTAssertEqual(simulated.memories.map(\.memory.id), [demo.id])
+        XCTAssertEqual(simulated.mentionedPeople, [demoPerson])
     }
 
     func testRetrieverEndToEndWithStore() async throws {

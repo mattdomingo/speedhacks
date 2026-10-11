@@ -38,7 +38,7 @@ async function records(store, source, includeDemo) {
 }
 
 // Engineer 2: Google records are synced into the store; uncovered dates are fetched live.
-export async function getSchedule(store, date, google, { includeDemo = false, endDate = date } = {}) {
+export async function getSchedule(store, date, google, { includeDemo = false, endDate = date, failOnLiveError = false } = {}) {
   const context = google ? await google.snapshot('calendar') : undefined;
   const calendar = context?.state ?? 'absent';
   // A historical range can extend outside the synced window; fetch it in one bounded request.
@@ -64,6 +64,7 @@ export async function getSchedule(store, date, google, { includeDemo = false, en
         await google.fetchDay(date, context);
       } catch (error) {
         await google.assertCurrent(context);
+        if (failOnLiveError) throw unavailable('Calendar');
         console.error(`Live calendar lookup failed: ${error.message}`);
         // An empty answer would wrongly claim "no plans"; report the failure instead.
         if (!(await records(store, 'calendar', includeDemo)).some(item => overlaps(item, date))) throw unavailable('Calendar');
@@ -93,7 +94,7 @@ async function rank(store, query, includeGoogle, includeDemo, inPeriod) {
     .map(({ item }) => item);
 }
 
-export async function searchMessages(store, text, google, { includeDemo = false, date, endDate = date, timeZone = 'UTC' } = {}) {
+export async function searchMessages(store, text, google, { includeDemo = false, date, endDate = date, timeZone = 'UTC', failOnLiveError = false } = {}) {
   // Accept older clients' generic queries as well as the optional-query contract.
   const recent = text === undefined || /^(?:(?:recent|latest|new)\s+)?(?:e-?mails?|messages?|inbox)$/i.test(text.trim());
   const query = recent ? [] : terms(text);
@@ -117,6 +118,7 @@ export async function searchMessages(store, text, google, { includeDemo = false,
     return result(live.length ? live : local, google, context);
   } catch (error) {
     await google.assertCurrent(context);
+    if (failOnLiveError) throw unavailable('Email');
     console.error(`Live Gmail search failed: ${error.message}`);
     if (!liveRequired && local.length) return result(local, google, context);
     throw unavailable('Email');

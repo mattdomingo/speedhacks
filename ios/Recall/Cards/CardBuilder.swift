@@ -10,7 +10,9 @@ enum CardBuilder {
         let buttons = cleanButtons(answer.buttons)
 
         if let person, answer.cardType == .person {
-            return .person(personCard(person: person, answer: answer.answer, memories: personMemories.isEmpty ? used : personMemories,
+            var seen = Set<String>()
+            let supporting = (used + personMemories).filter { seen.insert($0.id).inserted }
+            return .person(personCard(person: person, answer: answer.answer, memories: supporting,
                                       buttons: buttons, now: now))
         }
 
@@ -27,7 +29,7 @@ enum CardBuilder {
             photo: unsure ? nil : PhotoRef(assetID: primary?.assetID),
             closest: unsure ? primary.map { TextTools.secondPerson($0.summary) } : nil,
             howIKnow: unsure ? nil : primary.map { howIKnow($0, question: question, now: now) },
-            sourceLine: sourceLine(for: used, now: now),
+            sourceLine: used.isEmpty && answer.memoryIDs.contains("clock-now") ? "CURRENT TIME" : sourceLine(for: used, now: now),
             buttons: buttons,
             memoryIDs: used.map(\.id)))
     }
@@ -60,6 +62,18 @@ enum CardBuilder {
     /// "FROM YOUR CALENDAR + NOTE · SEP 27" for several.
     static func sourceLine(for memories: [Memory], now: Date) -> String {
         guard let first = memories.first else { return "NOTHING SAVED YET" }
+        if memories.count == 1, first.id.hasPrefix("shared:") {
+            let label = sharedSourceLabel(first.source)
+            return "\(label) · \(Phrases.sourceDate(first.timestamp, now: now, includeTime: true))".uppercased()
+        }
+        if memories.contains(where: { $0.id.hasPrefix("shared:") }) {
+            let labels = memories.reduce(into: [String]()) { labels, memory in
+                let label = memory.id.hasPrefix("shared:") ? sharedSourceLabel(memory.source) : memory.type.sourceLabel
+                if !labels.contains(label) { labels.append(label) }
+            }
+            let anchor = memories.filter { $0.timestamp <= now }.max { $0.timestamp < $1.timestamp } ?? first
+            return "From your \(labels.joined(separator: " + ")) · \(Phrases.sourceDate(anchor.timestamp, now: now, includeTime: true))".uppercased()
+        }
         let types = memories.reduce(into: [MemoryType]()) { if !$0.contains($1.type) { $0.append($1.type) } }
         if types.count == 1, memories.count == 1 {
             var parts = [first.type.sourceLabel, Phrases.sourceDate(first.timestamp, now: now, includeTime: first.type != .note && first.type != .person)]
@@ -78,6 +92,16 @@ enum CardBuilder {
 
     static func howIKnow(_ memory: Memory, question: String, now: Date) -> String {
         let day = Phrases.day(memory.timestamp, now: now)
+        if memory.id.hasPrefix("shared:") {
+            switch memory.source {
+            case "camera": return "Last confirmed camera sighting \(day) at \(Phrases.time(memory.timestamp))."
+            case "email": return "It's in your email from \(day)."
+            case "calendar": return "It's a plan on your connected calendar."
+            case "call": return "It's from your call \(day)."
+            case "text": return "It's from a saved message \(day)."
+            default: return "It's in your connected memories from \(day)."
+            }
+        }
         switch memory.type {
         case .photo:
             let pronoun = TextTools.foundLabel(for: question) == "Found them!" ? "them" : "it"
@@ -90,6 +114,17 @@ enum CardBuilder {
             return memory.has(MemoryTag.parking) ? "Your phone saved where you parked \(day)." : "Your phone saved this place \(day)."
         case .person:
             return "It's in your contacts."
+        }
+    }
+
+    private static func sharedSourceLabel(_ source: String) -> String {
+        switch source {
+        case "camera": "Camera · last seen"
+        case "email": "Email"
+        case "calendar": "Calendar"
+        case "call": "Call"
+        case "text": "Message"
+        default: "Connected memory"
         }
     }
 

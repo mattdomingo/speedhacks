@@ -8,6 +8,8 @@ const CHECKS = [
   ['GET', '/camera/frame', [401], 'raw frames need CAMERA_TOKEN'],
   ['POST', '/camera/observations', [401], 'observations need CAMERA_TOKEN'],
   // 503 while a feature is not configured, 401 once it is; never 200 without credentials.
+  ['POST', '/app/session', [401, 503], 'pairing needs a device credential'],
+  ['POST', '/app/ask', [401, 503], 'shared memory needs a device credential'],
   ['GET', '/google/status', [401, 503], 'Google admin needs ADMIN_TOKEN'],
   ['GET', '/cron/google-sync', [401, 503], 'cron needs CRON_SECRET'],
   ['POST', '/webhooks/dial', [401, 503], 'webhooks need a Dial signature'],

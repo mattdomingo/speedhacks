@@ -32,8 +32,8 @@ struct Retriever: Sendable {
     func retrieve(_ question: String, now: Date = Date(), limit: Int = 12, demoOnly: Bool,
                   excluding: Set<String> = []) async -> RetrievalResult {
         let memories = ((try? await store.all()) ?? [])
-            .filter { (!demoOnly || $0.isDemo) && !excluding.contains($0.id) }
-        let people = ((try? await store.people()) ?? []).filter { !demoOnly || $0.isDemo }
+            .filter { $0.isDemo == demoOnly && !excluding.contains($0.id) }
+        let people = ((try? await store.people()) ?? []).filter { $0.isDemo == demoOnly }
 
         // One query vector per embedding model the memories were stored with.
         var queryVectors: [String: [Float]] = [:]
@@ -49,16 +49,16 @@ struct Retriever: Sendable {
 
     /// Pure ranking, separated for tests.
     static func rank(question: String, memories: [Memory], people: [Person],
-                     queryVectors: [String: [Float]], now: Date) -> [ScoredMemory] {
+                     queryVectors: [String: [Float]], now: Date, calendar: Calendar = .current) -> [ScoredMemory] {
         let queryTerms = TextTools.expandedTerms(question)
         let mentioned = TextTools.mentionedPeople(in: question, people: people)
         let mentionedNames = Set(mentioned.flatMap(\.names))
-        let range = timeRange(in: question, now: now)
-        let firstWord = TextTools.words(question).first ?? ""
+        let range = timeRange(in: question, now: now, calendar: calendar)
+        let firstWord = TextTools.intentWords(question).first ?? ""
         let wantsLatest = ["where", "wheres"].contains(firstWord)
         let wantsUpcoming = TextTools.words(question).contains { ["next", "upcoming", "tomorrow", "later"].contains($0) }
 
-        return memories.map { memory -> ScoredMemory in
+        return memories.filter { matchesTimeRange($0, range: range) }.map { memory -> ScoredMemory in
             let memoryTerms = Set(TextTools.terms(memory.searchText))
             let matched = queryTerms.filter { !$0.isDisjoint(with: memoryTerms) }.count
             let lexical = queryTerms.isEmpty ? 0 : Double(matched) / Double(queryTerms.count)
@@ -75,7 +75,7 @@ struct Retriever: Sendable {
 
             var score = 0.55 * semantic + 0.45 * lexical
             if personMatch { score += 0.45 }
-            if let range, range.contains(memory.timestamp) { score += 0.2 }
+            if range != nil { score += 0.2 }
             if wantsUpcoming, memory.timestamp > now { score += 0.15 }
 
             // Where-questions want the latest sighting; everything else gently prefers recent.
@@ -90,21 +90,42 @@ struct Retriever: Sendable {
         .sorted { $0.score > $1.score }
     }
 
-    /// "today", "yesterday", "this morning", "last week" → a date window.
+    /// Use half-open windows so midnight belongs only to the following day.
+    /// Calendar events spanning a window remain relevant to that window.
+    static func matchesTimeRange(_ memory: Memory, range: DateInterval?) -> Bool {
+        guard let range else { return true }
+        if memory.type == .event, let end = memory.endDate, end > memory.timestamp {
+            return memory.timestamp < range.end && end > range.start
+        }
+        return memory.timestamp >= range.start && memory.timestamp < range.end
+    }
+
+    /// Relative days and weeks use the user's calendar, including DST changes.
     static func timeRange(in question: String, now: Date, calendar: Calendar = .current) -> DateInterval? {
         let words = Set(TextTools.words(question))
-        let startOfToday = calendar.startOfDay(for: now)
-        if words.contains("today") || (words.contains("this") && words.contains("morning")) {
-            return DateInterval(start: startOfToday, duration: 86_400)
+        func day(_ offset: Int) -> DateInterval? {
+            guard let date = calendar.date(byAdding: .day, value: offset, to: now) else { return nil }
+            return calendar.dateInterval(of: .day, for: date)
         }
-        if words.contains("yesterday") {
-            return DateInterval(start: startOfToday.addingTimeInterval(-86_400), duration: 86_400)
+        if words.contains("this") && words.contains("morning"),
+           let today = day(0), let noon = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: now) {
+            return DateInterval(start: today.start, end: noon)
         }
-        if words.contains("tomorrow") {
-            return DateInterval(start: startOfToday.addingTimeInterval(86_400), duration: 86_400)
-        }
+        if words.contains("today") { return day(0) }
+        if words.contains("yesterday") { return day(-1) }
+        if words.contains("tomorrow") { return day(1) }
         if words.contains("week") {
-            return DateInterval(start: startOfToday.addingTimeInterval(-7 * 86_400), end: now.addingTimeInterval(7 * 86_400))
+            if words.contains("ago") { return day(-7) }
+            if words.contains("past"), let start = calendar.date(byAdding: .day, value: -7, to: now) {
+                return DateInterval(start: start, end: now)
+            }
+            let offset: Int
+            if words.contains("last") || words.contains("previous") { offset = -1 }
+            else if words.contains("next") || words.contains("upcoming") { offset = 1 }
+            else if words.contains("this") { offset = 0 }
+            else { return nil }
+            guard let date = calendar.date(byAdding: .weekOfYear, value: offset, to: now) else { return nil }
+            return calendar.dateInterval(of: .weekOfYear, for: date)
         }
         return nil
     }

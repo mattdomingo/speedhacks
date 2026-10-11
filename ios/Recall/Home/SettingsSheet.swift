@@ -6,6 +6,10 @@ struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var confirmStartOver = false
+    @State private var connectionToken = ""
+    @State private var connectionPin = ""
+    @State private var connecting = false
+    @State private var connectionError: String?
 
     var body: some View {
         ScrollView {
@@ -19,8 +23,50 @@ struct SettingsSheet: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
-                    MonoCaption(text: model.client.isConfigured ? "Steph's brain · Claude, via the Recall server" : "Steph's brain · on this phone only")
+                    MonoCaption(text: model.demoMode ? "Demo memories only" : model.connectionStatus)
                     MonoCaption(text: "Remembering \(model.memoryCount.formatted()) moments")
+                }
+
+                group("Connected memories") {
+                    Text("Use the calendar, email, and last camera sightings available when you call Steph. Only memories needed for your question are sent to the answer service.")
+                        .font(.sora(16)).foregroundStyle(Theme.secondary)
+                    if model.sharedMemoryConnected {
+                        Button("Disconnect shared memories") {
+                            do { try model.disconnectMemories(); connectionError = nil }
+                            catch { connectionError = "Could not remove the saved connection. Please try again." }
+                        }
+                        .buttonStyle(.pill(.secondary))
+                    }
+                    SecureField("Device access code", text: $connectionToken)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("memory-access-code")
+                    SecureField("Memory PIN (if required)", text: $connectionPin)
+                        .keyboardType(.numberPad).textFieldStyle(.roundedBorder)
+                    Button(connecting ? "Connecting…" : "Connect memories") {
+                        connecting = true
+                        connectionError = nil
+                        Task {
+                            defer { connecting = false }
+                            do {
+                                try await model.connectMemories(token: connectionToken, pin: connectionPin)
+                                connectionToken = ""
+                                connectionPin = ""
+                            } catch {
+                                connectionError = StephClient.connectionMessage(for: error)
+                            }
+                        }
+                    }
+                    .buttonStyle(.pill(.secondary))
+                    .disabled(connecting || connectionToken.trimmingCharacters(in: .whitespacesAndNewlines).count < 32)
+                    if let connectionError {
+                        Text(connectionError).font(.sora(16)).foregroundStyle(Theme.secondary)
+                            .accessibilityIdentifier("memory-connection-error")
+                    }
+                    Text("Enter the private device access code provided during setup. Disconnecting removes it from this phone.")
+                        .font(.sora(15)).foregroundStyle(Theme.secondary)
+                    Link("Call Steph", destination: URL(string: "tel:+12408962183")!)
+                        .buttonStyle(.pill(.secondary))
                 }
 
                 group("Demo") {
