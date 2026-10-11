@@ -550,8 +550,8 @@ test('live medicine demo schedules through authenticated MCP and delivers each r
   assert.equal(dial.texts.length, 1);
   assert.equal(dial.calls[0].to, PATIENT);
   assert.equal(dial.texts[0].to, PATIENT);
-  assert.match(dial.calls[0].instruction, /No action is needed/);
-  assert.match(dial.texts[0].body, /No action is needed/);
+  assert.match(dial.calls[0].instruction, /Please take your medicine\. This is only a demonstration; no action is needed/);
+  assert.match(dial.texts[0].body, /Please take your medicine\. This is only a demonstration; no action is needed/);
 });
 
 test('live medicine demo preserves caller and PIN checks and rejects invalid channels', async t => {

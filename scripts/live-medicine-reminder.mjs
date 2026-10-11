@@ -25,7 +25,7 @@ export async function scheduleMedicineReminder(env, channel) {
     assert.ok((await client.listTools()).tools.some(tool => tool.name === 'set_reminder'),
       'Live reminders are not enabled on this backend');
     const reply = await client.callTool({ name: 'set_reminder', arguments: {
-      text: 'This is a demo medicine reminder. No action is needed.', in_minutes: 1, channel,
+      text: 'This is a demo announcement. Please take your medicine. This is only a demonstration; no action is needed.', in_minutes: 1, channel,
       ...(env.CALLER_PIN ? { pin: env.CALLER_PIN } : {}),
     } });
     if (reply.isError) throw new Error(reply.content.filter(item => item.type === 'text').map(item => item.text).join(' '));
