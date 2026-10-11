@@ -189,7 +189,7 @@ function schemaFact(node) {
     }
     case 'Order':
       return { kind: 'receipt', name: nameOf(node.merchant ?? node.seller), confirmation: node.orderNumber,
-        amount: moneyOf(node.totalPrice ?? node.price ?? first(node.acceptedOffer)?.price, node.priceCurrency),
+        amount: moneyOf(node.totalPrice ?? node.price ?? node.acceptedOffer, node.priceCurrency),
         status: statusOf(node.orderStatus), start_time: node.orderDate, url: node.url };
     case 'Invoice':
       return { kind: 'bill', name: nameOf(node.provider ?? node.broker), confirmation: node.confirmationNumber,
@@ -306,7 +306,7 @@ const SUBJECT_KINDS = [
 ];
 
 // Booking codes are upper-case and usually contain a digit (six-letter airline locators do not).
-const isCode = value => /^(?=.*\d)[A-Z0-9-]{5,15}$|^[A-Z]{6}$/.test(value);
+const isCode = value => /^(?=.*\d)[A-Z0-9](?:[A-Z0-9-]{3,22})[A-Z0-9]$|^[A-Z]{6}$/.test(value);
 
 function match(text, pattern) {
   return text.match(pattern)?.[1];
@@ -333,7 +333,7 @@ export function heuristicFacts({ subject = '', text = '' }) {
   const flight = all.match(/\bflight\s*(?:number|no\.?|#)?\s*[:#]?\s*([A-Z0-9]{2})\s?(\d{1,4})\b/i);
   const fact = cleanFact({
     kind,
-    confirmation: codeAfter(all, /\b(?:confirmation|booking|reservation|order|record locator)\s*(?:code|number|no\.?|#)?\s*[:#]?\s*([A-Z0-9-]{5,15})\b/gi),
+    confirmation: codeAfter(all, /\b(?:confirmation|booking|reservation|order|record locator)\s*(?:code|number|no\.?|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{3,22}[A-Z0-9])\b/gi),
     tracking_number: codeAfter(all, /\btracking\s*(?:number|no\.?|#|id)?\s*[:#]?\s*([A-Z0-9]{8,34})\b/gi) ?? match(all, /\b(1Z[0-9A-Z]{16})\b/),
     flight_number: kind === 'flight' && flight && /^[A-Z0-9]{2}$/.test(flight[1]) && /[A-Z]/.test(flight[1]) ? `${flight[1]} ${flight[2]}` : undefined,
     amount: match(all, /\b(?:total|amount due|balance due|amount)\s*[:-]?\s*((?:US)?\$\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?|€\s?\d+(?:[.,]\d{2})?|£\s?\d+(?:\.\d{2})?)/i),
