@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { sqliteCameraStore } from './physical/store-sqlite.mjs';
 import { sqliteDigitalStore } from './digital/store-sqlite.mjs';
 import { sqliteVoiceStore } from './voice/store-sqlite.mjs';
+import { BRAIN_TABLES } from './brain/schema.mjs';
+import { brainStore, sqliteDriver } from './brain/store.mjs';
 
 export function openStore(dataDir) {
   mkdirSync(dataDir, { recursive: true });
@@ -23,8 +25,10 @@ export function openStore(dataDir) {
       jpeg BLOB NOT NULL
     );
   `);
+  db.exec(BRAIN_TABLES);
   return {
     db,
+    ...brainStore(sqliteDriver(db)),
     ...sqliteCameraStore(db),
     ...sqliteDigitalStore(db),
     ...sqliteVoiceStore(db),

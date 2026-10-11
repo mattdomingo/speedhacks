@@ -21,7 +21,7 @@
       "schedule": "*/10 * * * *"
     },
     {
-      "path": "/cron/dial-reminders",
+      "path": "/cron/steph",
       "schedule": "* * * * *"
     }
   ]

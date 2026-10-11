@@ -8,8 +8,8 @@ import { createGoogle } from './digital/google.mjs';
 import { cronRoutes, googleRoutes } from './digital/routes.mjs';
 import { describeHeaders, dialWebhook } from './voice/webhooks.mjs';
 import { createAnalytics } from './analytics/index.mjs';
-import { createDial } from './voice/dial.mjs';
-import { createReminders } from './voice/reminders.mjs';
+import { createSteph } from './brain/index.mjs';
+import { stephRoutes as brainRoutes } from './brain/routes.mjs';
 import { STEPH_PATHS, stephGate, stephRoutes } from './steph/routes.mjs';
 
 function bearer(token) {
@@ -33,27 +33,31 @@ function validateTimestamp(timestamp) {
 }
 
 export function createApp(config, store, physicalOptions, {
-  google = createGoogle({ config, store }), analytics = createAnalytics({}), dial, now, steph,
+  google = createGoogle({ config, store }), analytics = createAnalytics({}), steph,
+  dial, claude: brainClaude, apns, now, fetch: brainFetch,
 } = {}) {
   const app = express();
   const physical = createPhysicalMemory(config, store, physicalOptions);
-  const reminders = createReminders(config, store, {
-    dial: config.DIAL_API_KEY ? dial ?? createDial(config.DIAL_API_KEY) : null, now, timeZone: () => google.timeZone(),
-  });
+  // Steph everywhere: one brain, memory and timeline behind the app, calls, texts and push.
+  const brain = createSteph({ config, store, google, now, apns, fetch: brainFetch,
+    dial: config.DIAL_API_KEY ? dial : null, claude: config.ANTHROPIC_API_KEY ? brainClaude : null,
+    physicalOptions: { includeDemo: config.DEMO_MODE === 'true', cameraStatus: () => physical.status() } });
   app.disable('x-powered-by');
   app.get('/health', (_req, res) => res.json({ ok: true, demo: config.DEMO_MODE === 'true' }));
   // Signed by Dial over the raw body, so it is mounted before the JSON parser.
-  app.post('/webhooks/dial', dialWebhook(config, store, analytics, event => reminders.handleEvent(event)));
+  app.post('/webhooks/dial', dialWebhook(config, store, analytics, event => brain.enabled ? brain.onDialEvent(event) : false));
   app.use('/mcp', bearer(config.DIAL_MCP_TOKEN));
   app.use('/camera', bearer(config.CAMERA_TOKEN));
   app.use('/camera', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use(STEPH_PATHS, stephGate(config), bearer(config.RECALL_APP_TOKEN));
   app.use(express.json({ limit: '1mb' }));
+  // Mounted before googleRoutes: app sign-ins claim their own /google/callback states.
+  app.use(brainRoutes(brain, { now }));
   app.use('/google', googleRoutes(google, bearer(config.ADMIN_TOKEN)));
-  // Vercel Cron, every minute: deliver due reminders and settle calls whose webhook never arrived.
-  app.get('/cron/dial-reminders', bearer(config.CRON_SECRET), async (_req, res) => {
-    if (!reminders.ready) return res.status(503).json({ error: 'Reminder delivery is not configured' });
-    res.set('Cache-Control', 'no-store').json(await reminders.dispatch());
+  // Vercel Cron, every minute: Steph's proactive engine (nudges, escalation, call settlement).
+  app.get('/cron/steph', bearer(config.CRON_SECRET), async (_req, res) => {
+    if (!brain.enabled) return res.status(503).json({ error: 'Steph delivery is not configured' });
+    res.set('Cache-Control', 'no-store').json(await brain.proactive.tick());
   });
   app.use('/cron', cronRoutes(google, bearer(config.CRON_SECRET), { store, retentionDays: config.DIAL_EVENT_RETENTION_DAYS }));
   app.use(stephRoutes(config, steph));
@@ -70,17 +74,21 @@ export function createApp(config, store, physicalOptions, {
     // identity and user-scoped storage before multiple users' personal data.
     const number = req.get(config.DIAL_CALLER_HEADER ?? 'x-dial-user-number');
     const direction = req.get(config.DIAL_DIRECTION_HEADER ?? 'x-dial-direction');
-    const known = !config.DEMO_CALLER_NUMBER ? 'no_demo_caller' : !number ? 'no_caller_header'
-      : number !== config.DEMO_CALLER_NUMBER ? 'unknown_caller' : undefined;
+    // With Steph on, a caller is whoever verified that number (or the legacy demo allowlist);
+    // before that, only the DEMO_CALLER_NUMBER allowlist applies.
+    const user = brain.enabled && number ? await brain.auth.userForPhone(number) : undefined;
+    const known = !config.DEMO_CALLER_NUMBER && !brain.enabled ? 'no_demo_caller' : !number ? 'no_caller_header'
+      : (brain.enabled ? !user : number !== config.DEMO_CALLER_NUMBER) ? 'unknown_caller' : undefined;
     const reason = known ?? (direction !== 'inbound' ? 'not_inbound' : undefined);
-    // Reminder calls ring the same person from Steph's line, and they may ask to be reminded again.
-    const reminderReason = known ?? (!['inbound', 'outbound'].includes(direction) ? 'no_direction'
-      : req.get('x-dial-agent-number') !== config.STEPH_NUMBER ? 'not_steph_line' : undefined);
+    // Steph's own calls ring the same verified person, who may ask her anything on them.
+    const lineReason = known ?? (!['inbound', 'outbound'].includes(direction) ? 'no_direction'
+      : !config.STEPH_NUMBER || req.get('x-dial-agent-number') !== config.STEPH_NUMBER ? 'not_steph_line' : undefined);
     await handleMcp(req, res, store, {
-      authorized: !reason, reason, number: known ? undefined : number, reminders: !reminderReason, reminderReason,
+      authorized: !reason, reason, number: known ? undefined : number, line: !lineReason, lineReason,
+      user, timeZone: user ? await brain.zoneOf(user) : undefined,
     }, {
       includeDemo: config.DEMO_MODE === 'true', cameraStatus: () => physical.status(),
-      google, analytics, timeZone: await google.timeZone(), callerPin: config.CALLER_PIN, reminders,
+      google, analytics, timeZone: await google.timeZone(), callerPin: config.CALLER_PIN, steph: brain,
     });
   });
 

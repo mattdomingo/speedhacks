@@ -62,6 +62,16 @@ export function readConfig(env = process.env) {
     STEPH_MODEL: z.string().trim().min(1).default('claude-opus-5-5'),
     VOYAGE_API_KEY: optional(z.string().trim().min(1)),
     EMBED_MODEL: z.string().trim().min(1).default('voyage-3.5-lite'),
+    // Steph everywhere (backend/brain). Sign in with Apple checks the identity token's audience
+    // against these bundle IDs (comma-separated); unset disables Apple sign-in.
+    APPLE_BUNDLE_IDS: optional(z.string().min(1)),
+    // Where the backend sends the app after Google sign-in (ASWebAuthenticationSession callback).
+    APP_CALLBACK_URL: z.string().regex(/^[a-z][a-z0-9+.-]*:\/\//).default('recall://auth'),
+    // APNs token auth (.p8). All four or none; without them Steph never chooses push.
+    APNS_KEY_ID: optional(z.string().regex(/^[A-Z0-9]{10}$/)),
+    APNS_TEAM_ID: optional(z.string().regex(/^[A-Z0-9]{10}$/)),
+    APNS_KEY: optional(z.string().includes('PRIVATE KEY')),
+    APNS_TOPIC: optional(z.string().min(1)),
   }).parse({ ...env, DATABASE_URL: env.DATABASE_URL || undefined });
   if (env.VERCEL === '1' && !config.DATABASE_URL) {
     throw new Error('Set DATABASE_URL on Vercel; local SQLite is not durable there');
@@ -71,6 +81,8 @@ export function readConfig(env = process.env) {
   if (new Set(secrets).size !== secrets.length) {
     throw new Error('Use separate Dial, camera, admin, webhook, cron and app secrets');
   }
+  const apns = ['APNS_KEY_ID', 'APNS_TEAM_ID', 'APNS_KEY', 'APNS_TOPIC'].filter(key => config[key]);
+  if (apns.length && apns.length !== 4) throw new Error('Push needs APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY and APNS_TOPIC together');
   // Google is all-or-nothing so a half-configured deployment fails at boot, not mid-call.
   const google = GOOGLE_KEYS.filter(key => config[key]);
   if (google.some(key => key.startsWith('GOOGLE_CLIENT')) && google.length !== GOOGLE_KEYS.length) {

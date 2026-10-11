@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { postgresCameraStore } from './physical/store-postgres.mjs';
 import { postgresDigitalStore } from './digital/store-postgres.mjs';
 import { postgresVoiceStore } from './voice/store-postgres.mjs';
+import { brainStore, postgresDriver } from './brain/store.mjs';
 
 export function openPostgresStore(connectionString) {
   const pool = new Pool({ connectionString, max: 3, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 5_000 });
@@ -13,6 +14,7 @@ export function openPostgresStore(connectionString) {
     ...postgresCameraStore(pool),
     ...postgresDigitalStore(pool),
     ...postgresVoiceStore(pool),
+    ...brainStore(postgresDriver(pool)),
     async put(record) {
       await pool.query('INSERT INTO evidence (id, source, timestamp, payload) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING',
         [record.id, record.source, record.timestamp, record]);

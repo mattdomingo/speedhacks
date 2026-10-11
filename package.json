@@ -10,7 +10,8 @@
     "test": "node --test backend/test/*.test.mjs",
     "db:init": "node --env-file-if-exists=.env scripts/init-db.mjs",
     "google": "node --env-file-if-exists=.env scripts/google.mjs",
-    "keewano:codegen": "node --disable-warning=ExperimentalWarning scripts/keewano-codegen.mjs"
+    "keewano:codegen": "node --disable-warning=ExperimentalWarning scripts/keewano-codegen.mjs",
+    "persona": "node -e \"import('./backend/brain/persona.mjs').then(m => require('node:fs').writeFileSync('backend/voice/instructions.txt', m.voiceInstruction()))\""
   },
   "repository": {
     "type": "git",
