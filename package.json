@@ -1,0 +1,36 @@
+{
+  "name": "speedhacks",
+  "version": "1.0.0",
+  "description": "Phone memory assistant hackathon scaffold",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "start": "node --env-file-if-exists=.env backend/index.mjs",
+    "dev": "node --watch --env-file-if-exists=.env backend/index.mjs",
+    "camera": "node --env-file-if-exists=.env scripts/camera.mjs",
+    "test": "node --test backend/test/*.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mattdomingo/speedhacks.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/mattdomingo/speedhacks/issues"
+  },
+  "homepage": "https://github.com/mattdomingo/speedhacks#readme",
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.1",
+    "express": "^5.3.0",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.3.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.15.0 <23"
+  }
+}
