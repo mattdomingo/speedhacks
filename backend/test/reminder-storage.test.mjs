@@ -84,7 +84,7 @@ test('legacy reminder migration preserves records and does not invent SMS delive
   assert.equal(reclaimed.some(row => ['text-sending', 'text-delivered', 'text-failed'].includes(row.id)), false);
 });
 
-test('overlapping claims send each SMS at most once while expired call leases remain reclaimable', async t => {
+test('overlapping claims reserve calls and texts once, including after a lease would expire', async t => {
   const store = await testStore(t);
   const second = store.reopen();
   t.after(() => second.close());
@@ -99,10 +99,12 @@ test('overlapping claims send each SMS at most once while expired call leases re
   assert.equal(text.message_status, 'unknown');
   assert.equal(text.lease_until, null);
   assert.equal(text.attempts, 1);
+  const voice = claims.find(row => row.id === 'voice');
+  assert.equal(voice.status, 'calling');
+  assert.equal(voice.lease_until, null);
   const reclaimed = await second.claimDueReminders(END, END);
-  assert.deepEqual(reclaimed.map(row => row.id), ['voice']);
-  assert.equal(reclaimed[0].status, 'sending');
-  assert.equal(reclaimed[0].attempts, 2);
+  assert.deepEqual(reclaimed, []);
+  assert.deepEqual((await second.unconfirmedCalls()).map(row => row.id), ['voice']);
 });
 
 test('only one worker owns missed-call fallback and SMS receipts preserve the call outcome', async t => {
@@ -111,7 +113,7 @@ test('only one worker owns missed-call fallback and SMS receipts preserve the ca
   t.after(() => second.close());
   await store.createReminder(reminder('fallback', 'call'));
   await store.claimDueReminders(NOW, LATER);
-  await store.updateReminder('fallback', 'sending', { status: 'calling', call_id: 'missed-call' }, NOW);
+  await store.updateReminder('fallback', 'calling', { status: 'calling', call_id: 'missed-call' }, NOW);
   const results = await Promise.all([
     store.claimReminderFallback('fallback', 'no-answer', LATER),
     second.claimReminderFallback('fallback', 'no-answer', LATER),

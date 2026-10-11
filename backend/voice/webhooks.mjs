@@ -54,10 +54,18 @@ export function dialWebhook(config, store, analytics, onEvent) {
     } catch {
       return res.status(400).json({ error: 'Invalid event' });
     }
+    // Dial's stable delivery id: when present it must name the signed body's event.
+    const headerId = req.get('x-dial-event-id');
+    if (headerId !== undefined && headerId !== event.id) return res.status(400).json({ error: 'Event id mismatch' });
     // Stored as received, including transcripts; pruned after DIAL_EVENT_RETENTION_DAYS.
     const fresh = await store.recordDialEvent(event, config.DIAL_EVENT_RETENTION_DAYS ?? 30);
     if (fresh) analytics.dialEvent(event.type);
-    await onEvent?.(event);
+    // Side effects run until one delivery completes them; a failed attempt answers 500 so Dial
+    // retries, and a later redelivery of a completed event does nothing.
+    if (onEvent && !await store.dialEventHandled?.(event.id)) {
+      await onEvent(event);
+      await store.markDialEventHandled?.(event.id);
+    }
     res.json({ received: true, duplicate: !fresh });
   };
 }

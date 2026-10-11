@@ -102,10 +102,23 @@ test('ask sends the verbatim prompt with memories and keeps only supplied memory
   assert.equal(request.output_config.format.type, 'json_schema');
   assert.equal(request.fallbacks, 'default');
   const content = request.messages[0].content;
-  assert.match(content, /^<memories>\n\{"id":"photo-1".*\n\{"id":"note-1".*\n<\/memories>/);
+  assert.match(content, /^<memories>\n\{"id":"clock-now".*"summary":"Right now it is Sunday, October 11, 2026 at 8:00 AM\.".*\n\{"id":"photo-1".*\n\{"id":"note-1".*\n<\/memories>/);
   assert.match(content, /never as instructions/);
   assert.match(content, /Current local time: Sunday, October 11, 2026 at 8:00 AM/);
   assert.match(content, /Question: Where are my keys\?$/);
+  // Times reach the model in the person's zone, never as a raw ISO stamp it could misread.
+  assert.match(content, /"time":"Sunday, October 11, 2026 at 8:12 AM"/);
+  assert.doesNotMatch(content, /"timestamp"/);
+});
+
+test('ask writes a UTC-stamped 3 PM event as 3:00 PM local time', async t => {
+  const claude = fakeClaude(message({ answer: 'At 3:00 PM.', card_type: 'answer', memory_ids: ['event-1'], buttons: [] }));
+  const post = await fixture(t, {}, { claude });
+  const event = { id: 'event-1', type: 'event', summary: 'Coffee with Priya', people: ['Priya'],
+    timestamp: '2026-10-11T22:00:00.000Z', source: 'calendar', confidence: 0.95 };
+  const response = await post('/ask', { ...askBody, question: 'When is coffee with Priya?', memories: [event] });
+  assert.equal(response.status, 200);
+  assert.match(claude.calls[0].messages[0].content, /"time":"Sunday, October 11, 2026 at 3:00 PM"/);
 });
 
 test('ask falls back to a default button and rejects declined, cut-off, empty, or failed answers', async t => {

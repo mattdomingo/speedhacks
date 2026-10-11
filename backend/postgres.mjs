@@ -17,6 +17,10 @@ export function openPostgresStore(connectionString) {
       await pool.query('INSERT INTO evidence (id, source, timestamp, payload) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING',
         [record.id, record.source, record.timestamp, record]);
     },
+    // Only seeded sample records: ids start with demo- and the payload says demo.
+    async clearDemo() {
+      await pool.query("DELETE FROM evidence WHERE id LIKE 'demo-%' AND payload->>'demo' = 'true'");
+    },
     async list(source) {
       const { rows } = await pool.query('SELECT payload FROM evidence WHERE source = $1', [source]);
       return rows.map(row => row.payload);
@@ -39,6 +43,7 @@ export function openPostgresStore(connectionString) {
       const { rows } = await pool.query('SELECT timestamp, jpeg FROM latest_frame WHERE slot = 1');
       return rows[0];
     },
+    async ping() { await pool.query('SELECT 1'); },
     close() { return pool.end(); },
   };
 }

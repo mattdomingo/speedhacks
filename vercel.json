@@ -23,6 +23,10 @@
     {
       "path": "/cron/dial-reminders",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/cron/caregiver-summary",
+      "schedule": "0 2 * * *"
     }
   ]
 }

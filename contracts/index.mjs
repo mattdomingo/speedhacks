@@ -42,6 +42,10 @@ export const setReminderInput = z.object({
 export const listRemindersInput = z.object({ pin });
 export const cancelReminderInput = z.object({ id: z.string().min(1).max(100), pin });
 export const clockInput = z.object({});
+export const whoIsInput = z.object({ name: z.string().trim().min(1).max(100).describe('A name or relationship, e.g. "Sam" or "my daughter"'), pin });
+export const careInput = z.object({ topic: z.string().trim().min(1).max(100).describe('What the instruction is about, e.g. "pills"'), pin });
+// No PIN: in an emergency the caller must not be blocked, and the text reveals nothing to them.
+export const notifyCaregiverInput = z.object({ reason: z.string().trim().min(1).max(300).describe("The caller's need in their own words") });
 
 // Steph (iOS app). Unknown keys are stripped so they never reach the model.
 const isoTime = z.iso.datetime({ offset: true });

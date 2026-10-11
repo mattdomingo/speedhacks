@@ -99,7 +99,7 @@ test('MCP discovery works without caller headers but cannot retrieve data', asyn
   const { store, url } = await fixture(t);
   await seedDemo(store);
   const client = await connect(t, url);
-  assert.equal((await client.listTools()).tools.length, 3);
+  assert.equal((await client.listTools()).tools.length, 5);
   assert.equal((await client.callTool({ name: 'find_object', arguments: { object: 'keys' } })).isError, true);
   assert.equal((await client.callTool({ name: 'search_messages', arguments: {} })).isError, true);
 });
@@ -134,7 +134,7 @@ test('authorized inbound MCP calls retrieve demo evidence and handle unknown obj
   assert.equal(absent.structuredContent.status, 'unknown');
   const schedule = await client.callTool({ name: 'get_schedule', arguments: { date: new Date().toISOString().slice(0, 10) } });
   assert.equal(schedule.structuredContent.evidence[0].source, 'calendar');
-  const email = await client.callTool({ name: 'search_messages', arguments: { query: 'Sarah dinner' } });
+  const email = await client.callTool({ name: 'search_messages', arguments: { query: 'Maya dinner' } });
   assert.equal(email.structuredContent.evidence[0].source, 'email');
 });
 
@@ -148,16 +148,17 @@ test('live MCP excludes retained calendar and email fixtures without deleting th
   });
   for (const [name, args, source] of [
     ['get_schedule', { date }, 'calendar'],
-    ['search_messages', { query: 'Sarah dinner' }, 'email'],
+    ['search_messages', { query: 'Maya dinner' }, 'email'],
   ]) {
+    const stored = await store.list(source);
     const empty = (await client.callTool({ name, arguments: args })).structuredContent;
     assert.equal(empty.status, 'unknown');
     assert.deepEqual(empty.evidence, []);
     await store.put({ id: `real-${source}`, source, date, timestamp: now.toISOString(),
-      text: 'Sarah dinner plans', demo: false });
+      text: 'Maya dinner plans', demo: false });
     const real = (await client.callTool({ name, arguments: args })).structuredContent;
     assert.deepEqual(real.evidence.map(item => item.id), [`real-${source}`]);
-    assert.equal((await store.list(source)).length, 2, 'stored fixtures remain intact');
+    assert.deepEqual((await store.list(source)).filter(item => item.demo), stored, 'stored fixtures remain intact');
   }
 });
 
@@ -202,11 +203,12 @@ test('future observations are rejected', async t => {
 
 test('demo seeding is idempotent across backend starts', async t => {
   const { store } = await fixture(t);
-  await seedDemo(store);
-  await seedDemo(store);
-  assert.equal((await store.list('calendar')).length, 1);
+  const count = await seedDemo(store);
+  assert.equal(await seedDemo(store), count);
+  // Coffee with Priya, Maya's visit, lunch with Sam, and patient B's visit; one email; keys, car and B's glasses.
+  assert.equal((await store.list('calendar')).length, 4);
   assert.equal((await store.list('email')).length, 1);
-  assert.equal((await store.list('camera')).length, 1);
+  assert.equal((await store.list('camera')).length, 3);
 });
 
 test('failed asynchronous writes return an error, never a successful upload', async t => {
