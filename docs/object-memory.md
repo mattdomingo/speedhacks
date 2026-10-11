@@ -73,7 +73,7 @@ Say the historical location and time, and explain that the camera has not checke
 
 ### MCP smoke test
 
-No provisioned phone number or Dial account is required. For MCP-only testing, set `DEMO_CALLER_NUMBER=+14155550123` in both the backend environment and the local `.env`; redeploy after changing hosted configuration. This reserved number is only an authorization value in request headers. The existing `DIAL_MCP_TOKEN` is still required, and no phone call is placed.
+No provisioned phone number or Dial account is required. For an isolated MCP-only environment, set `DEMO_CALLER_NUMBER=+14155550123` in both the backend environment and the local `.env`; redeploy after changing hosted configuration. This reserved number is only an authorization value in request headers. Once real calling is configured, use the existing consented caller value for the smoke test instead of replacing production's allowlist. The existing `DIAL_MCP_TOKEN` is still required, and no phone call is placed.
 
 With the backend running, `DEMO_MODE=false`, its matching `DIAL_MCP_TOKEN` and allowlisted `DEMO_CALLER_NUMBER` loaded locally (plus `CALLER_PIN` if the backend sets one):
 
@@ -82,6 +82,16 @@ node --env-file=.env scripts/smoke-object-memory.mjs
 ```
 
 Set `BACKEND_URL` for the hosted server. The script discovers `find_object`, queries all three categories, checks timestamps/freshness metadata, rejects synthetic evidence, and prints results. It performs read-only MCP calls, with no Dial call and no paid inference. Supported and unknown are both valid smoke-test outcomes; this alone does not measure recognition accuracy. The same script is exercised by the automated HTTP/MCP integration test using a stubbed analyzer.
+
+### Test with Steph's phone line
+
+1. Configure the existing Steph line using [Connect Dial](../README.md#connect-dial). Its production Context MCP URL is `https://recall-kappa-nine.vercel.app/mcp`, with the production `DIAL_MCP_TOKEN` as a static Authorization bearer header. Dial supplies caller and direction headers for each call; never set a fixed caller header on the connection. Replace a development connection exposing the same tools: Dial rejects duplicate tool names, even across different MCP URLs.
+2. Set production `DEMO_CALLER_NUMBER` to the consented phone that will call Steph, plus `CALLER_PIN` and the user's IANA `TIMEZONE`, then redeploy. Keep their actual values out of Git. Run the smoke test above with matching local settings. A missing PIN and any unlisted caller must still be rejected.
+3. Start the camera preview using the command under **Start**. Place keys, phone, and wallet clearly on the tabletop, remove your hands, and wait for two successful analyzed frames. Confirm the smoke result has a new evidence timestamp; `camera.status: live` alone does not prove that object was seen again.
+4. From the allowed phone, call Steph at **+1 240-896-2183**. Ask, "Where did I leave my keys?" Give your memory PIN when asked. Expect the saved location and its observation time, in your configured time zone. Repeat for the wallet or phone; asking about an unseen object should return no record.
+5. To test a stale camera, stop capture and wait over sixty seconds, then ask again. Steph should retain the old sighting and its time and explain that it cannot confirm a fresh camera view. Restart capture and obtain two fresh clear views before testing a new placement.
+
+Backend smoke checks and Dial's `connected` status establish readiness, not a completed voice test. Record the actual call separately, including whether the PIN prompt, tool lookup, spoken location, and spoken time were correct. End the call after the test; do not create a reminder unless you intend its later call or text.
 
 ### Camera diagnostics
 
