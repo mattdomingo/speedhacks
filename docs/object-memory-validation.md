@@ -93,3 +93,20 @@ A concurrent deployment of `main` replaced the first fix deployment during testi
 The three direct diagnostic requests used 4,814 reported total tokens and did not write memories or count as fresh frames. Hosted recovery usage increased by 3,300 total tokens across two subsequent analyses (2,776 input, 524 output). These are observed usage windows, not a complete bill. Private diagnostic JPEGs were removed after review.
 
 This verifies the reported cap-over-phone failure and recovery in the tested scene. Visibility is still judged by the model. Controlled noisy-video, low-light, blur, complete concealment, pickup, and the full 18-placement tabletop acceptance remain unverified by this run.
+
+## Steph phone connection readiness
+
+On October 11, the existing Steph line was connected to `https://recall-kappa-nine.vercel.app/mcp`. Production was redeployed from main `bd1661b` with the consented real caller, the existing PIN, Dial credentials, the matching production webhook secret, and `America/Los_Angeles` as the test time zone. No caller number or secret is recorded here.
+
+| Check | Result |
+| --- | --- |
+| Dial line | Ready, calling enabled, English, and no call forwarding |
+| Context MCP | Exactly one connected production connection with seven tools; the former development MCP connection was removed after Dial rejected duplicate tool names |
+| Real caller MCP access | PIN-authenticated `find_object` returned supported historical camera evidence; missing PIN and the former reserved caller were rejected |
+| Clock | `whats_today` returned the configured Pacific time zone |
+| Signed production webhook | A Dial-generated `webhook.ping` passed signature verification and was read back from Postgres |
+| Voice instructions | Added observation time-zone and stale-camera rules to the current live prompt; read-back preserved its other instructions |
+| Camera at this checkpoint | Uploads resumed, but the newly deployed Gemini configuration repeatedly hit the twenty-second inference timeout. Stored sightings remained available; fresh placement recognition was not established |
+| Real inbound camera-question call | Not performed by this readiness run; the user must make the call and verify the spoken result |
+
+The pre-existing development webhook also subscribes to incoming messages and remains registered; this camera integration replaced the MCP connection only. No reminder, outbound call, or SMS was created during verification. Follow the [phone procedure](object-memory.md#test-with-stephs-phone-line) and resolve the current provider failure before judging a new placement.
