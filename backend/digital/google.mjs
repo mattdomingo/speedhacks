@@ -10,9 +10,14 @@ export const SCOPES = {
 // as a Sparta World (DEC-015). config.mjs only accepts loopback hosts and refuses them on Vercel,
 // because tokens are sent wherever these point. Credentialed fetches reject redirects so
 // a mock cannot forward an OAuth form body or authenticated API request to another host.
+const REAL_TOKEN_ORIGIN = 'https://oauth2.googleapis.com';
+
+// Origin and path only: a stray '?' or '#' must not swallow the paths appended below.
+const base = value => value && (({ origin, pathname }) => `${origin}${pathname}`.replace(/\/+$/, ''))(new URL(value));
+
 export function endpoints(config = {}) {
-  const api = config.GOOGLE_API_BASE_URL?.replace(/\/+$/, '');
-  const oauth = config.GOOGLE_OAUTH_BASE_URL?.replace(/\/+$/, '');
+  const api = base(config.GOOGLE_API_BASE_URL);
+  const oauth = base(config.GOOGLE_OAUTH_BASE_URL);
   return {
     auth: oauth ? `${oauth}/o/oauth2/v2/auth` : 'https://accounts.google.com/o/oauth2/v2/auth',
     token: oauth ? `${oauth}/token` : 'https://oauth2.googleapis.com/token',
@@ -153,6 +158,17 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
   const configured = Boolean(config.GOOGLE_CLIENT_ID);
   const key = configured ? Buffer.from(config.GOOGLE_TOKEN_KEY, 'hex') : undefined;
   const { auth: AUTH_URL, token: TOKEN_URL, revoke: REVOKE_URL, calendar: CALENDAR_API, gmail: GMAIL_API } = endpoints(config);
+  // A connection belongs to the token endpoint it was made with (DEC-015): a real Google
+  // connection is never used against a local mock, nor a mock connection against Google.
+  const TOKEN_ORIGIN = new URL(TOKEN_URL).origin;
+  const originOf = row => row.token_origin ?? REAL_TOKEN_ORIGIN;
+  const foreign = row => Boolean(row) && originOf(row) !== TOKEN_ORIGIN;
+  function foreignConnection(row) {
+    const error = new GoogleError(`The stored Google connection was made against ${originOf(row)}, not ${TOKEN_ORIGIN}; ` +
+      'disconnect it with matching Google endpoint settings first', { status: 409 });
+    error.expose = true;
+    return error;
+  }
   const calendarIds = (config.GOOGLE_CALENDAR_IDS || 'primary').split(',').map(id => id.trim()).filter(Boolean);
   const syncMinutes = config.GOOGLE_SYNC_MINUTES ?? 10;
   // Per-instance cache only; serverless instances each refresh their own access token.
@@ -166,7 +182,7 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
 
   async function connection() {
     const row = configured ? await store.googleConnection() : undefined;
-    return row && { ...row, scopes: row.scope.split(' ') };
+    return row && !foreign(row) ? { ...row, scopes: row.scope.split(' ') } : undefined;
   }
 
   async function timeZone() {
@@ -174,7 +190,8 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
   }
 
   async function snapshot(scope) {
-    const current = configured ? await store.googleSnapshot() : { generation: null };
+    const stored = configured ? await store.googleSnapshot() : { generation: null };
+    const current = foreign(stored.connection) ? { ...stored, connection: undefined } : stored;
     const row = current.connection;
     return { ...current, scope,
       state: row?.scope.split(' ').includes(SCOPES[scope]) ? row.status : 'absent' };
@@ -330,6 +347,8 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
     // Starts the OAuth web-server flow with PKCE; the caller visits the returned URL.
     async beginConnect() {
       if (!configured) throw new GoogleError('Google integration is not configured', { status: 503 });
+      const existing = await store.googleConnection();
+      if (foreign(existing)) throw foreignConnection(existing);
       const state = randomBytes(24).toString('base64url');
       const verifier = randomBytes(48).toString('base64url');
       await store.saveOAuthState(state, verifier);
@@ -348,6 +367,8 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
       if (!configured) throw new GoogleError('Google integration is not configured', { status: 503 });
       const handshake = typeof state === 'string' ? await store.takeOAuthState(state) : undefined;
       if (!handshake) throw new GoogleError('Connection link expired or was already used', { status: 400 });
+      const existing = await store.googleConnection();
+      if (foreign(existing)) throw foreignConnection(existing);
       const body = await tokenRequest({
         grant_type: 'authorization_code', code, code_verifier: handshake.verifier, redirect_uri: config.GOOGLE_REDIRECT_URI,
       });
@@ -373,13 +394,16 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
         email = (await oauthApi(`${GMAIL_API}/profile`).catch(() => ({}))).emailAddress ?? null;
       }
       const row = await store.saveGoogleConnection({ email, timezone: zone, scope: granted.join(' '),
-        refreshToken: seal(key, body.refresh_token), generation: handshake.generation });
+        refreshToken: seal(key, body.refresh_token), generation: handshake.generation, tokenOrigin: TOKEN_ORIGIN });
       if (!row) throw changedConnection();
       accessToken = { generation: row.generation, value: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 };
       return { email, scopes: granted };
     },
 
     async disconnect() {
+      // Never revoke at, or delete for, an endpoint the connection was not made with.
+      const existing = await store.googleConnection();
+      if (foreign(existing)) throw foreignConnection(existing);
       // Invalidate local requests and pending callbacks before the best-effort network call.
       const row = await store.deleteGoogleConnection();
       accessToken = undefined;
@@ -399,8 +423,11 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
 
     async status() {
       const row = await connection();
+      const stored = configured ? await store.googleConnection() : undefined;
       return {
         configured,
+        tokenEndpoint: TOKEN_ORIGIN,
+        ...(foreign(stored) ? { foreignConnection: { tokenEndpoint: originOf(stored), email: stored.email } } : {}),
         timeZone: await timeZone(),
         connection: row ? {
           email: row.email, status: row.status, connectedAt: row.connected_at,
