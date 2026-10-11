@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { sqliteCameraStore } from './physical/store-sqlite.mjs';
 
 export function openStore(dataDir) {
   mkdirSync(dataDir, { recursive: true });
@@ -22,6 +23,7 @@ export function openStore(dataDir) {
   `);
   return {
     db,
+    ...sqliteCameraStore(db),
     put(record) {
       db.prepare('INSERT OR IGNORE INTO evidence VALUES (?, ?, ?, ?)')
         .run(record.id, record.source, record.timestamp, JSON.stringify(record));
@@ -39,10 +41,10 @@ export function openStore(dataDir) {
       return record;
     },
     saveFrame(timestamp, jpeg) {
-      db.prepare(`INSERT INTO latest_frame VALUES (1, ?, ?)
+      return db.prepare(`INSERT INTO latest_frame VALUES (1, ?, ?)
         ON CONFLICT(slot) DO UPDATE SET timestamp=excluded.timestamp, jpeg=excluded.jpeg
-        WHERE julianday(excluded.timestamp) >= julianday(latest_frame.timestamp)`)
-        .run(timestamp, jpeg);
+        WHERE julianday(excluded.timestamp) > julianday(latest_frame.timestamp)`)
+        .run(timestamp, jpeg).changes > 0;
     },
     latestFrame() {
       return db.prepare('SELECT timestamp, jpeg FROM latest_frame WHERE slot = 1').get();
