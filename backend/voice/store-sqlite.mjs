@@ -28,13 +28,16 @@ export function sqliteVoiceStore(db) {
       return db.prepare('SELECT failures FROM caller_pin_failure WHERE caller_hash = ? AND window_start > ?')
         .get(callerHash, Date.now() - windowSeconds * 1000)?.failures ?? 0;
     },
-    recordPinFailure(callerHash, windowSeconds) {
+    // Counts an attempt and returns the running total in one statement, so concurrent guesses
+    // cannot all pass a separate "is it locked yet?" read before any of them is recorded.
+    countPinAttempt(callerHash, windowSeconds) {
       const now = Date.now();
-      db.prepare(`INSERT INTO caller_pin_failure VALUES (?, 1, ?)
+      return db.prepare(`INSERT INTO caller_pin_failure VALUES (?, 1, ?)
         ON CONFLICT(caller_hash) DO UPDATE SET
           failures = CASE WHEN window_start > ? THEN failures + 1 ELSE 1 END,
-          window_start = CASE WHEN window_start > ? THEN window_start ELSE excluded.window_start END`)
-        .run(callerHash, now, now - windowSeconds * 1000, now - windowSeconds * 1000);
+          window_start = CASE WHEN window_start > ? THEN window_start ELSE excluded.window_start END
+        RETURNING failures`)
+        .get(callerHash, now, now - windowSeconds * 1000, now - windowSeconds * 1000).failures;
     },
     clearPinFailures(callerHash) {
       db.prepare('DELETE FROM caller_pin_failure WHERE caller_hash = ?').run(callerHash);

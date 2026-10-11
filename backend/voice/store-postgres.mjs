@@ -22,12 +22,15 @@ export function postgresVoiceStore(pool) {
         WHERE caller_hash = $1 AND window_start > now() - make_interval(secs => $2)`, [callerHash, windowSeconds]);
       return rows[0]?.failures ?? 0;
     },
-    async recordPinFailure(callerHash, windowSeconds) {
-      await pool.query(`INSERT INTO caller_pin_failure AS f (caller_hash, failures, window_start) VALUES ($1, 1, now())
+    // Counts an attempt and returns the running total atomically (the row lock serializes
+    // concurrent upserts), so parallel guesses cannot slip past the lockout.
+    async countPinAttempt(callerHash, windowSeconds) {
+      const { rows } = await pool.query(`INSERT INTO caller_pin_failure AS f (caller_hash, failures, window_start) VALUES ($1, 1, now())
         ON CONFLICT (caller_hash) DO UPDATE SET
           failures = CASE WHEN f.window_start > now() - make_interval(secs => $2) THEN f.failures + 1 ELSE 1 END,
-          window_start = CASE WHEN f.window_start > now() - make_interval(secs => $2) THEN f.window_start ELSE now() END`,
-      [callerHash, windowSeconds]);
+          window_start = CASE WHEN f.window_start > now() - make_interval(secs => $2) THEN f.window_start ELSE now() END
+        RETURNING failures`, [callerHash, windowSeconds]);
+      return rows[0].failures;
     },
     async clearPinFailures(callerHash) {
       await pool.query('DELETE FROM caller_pin_failure WHERE caller_hash = $1', [callerHash]);
