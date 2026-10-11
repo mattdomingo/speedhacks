@@ -7,6 +7,8 @@ export function readConfig(env = process.env) {
     DATABASE_URL: z.string().url().regex(/^postgres(?:ql)?:\/\//).optional(),
     DIAL_MCP_TOKEN: z.string().min(32),
     CAMERA_TOKEN: z.string().min(32),
+    GEMINI_API_KEY: z.string().trim().default(''),
+    VISION_MODEL: z.string().trim().min(1).default('gemini-3.8-flash'),
     DEMO_CALLER_NUMBER: z.string().regex(/^\+[1-9]\d{7,14}$/).or(z.literal('')).default(''),
     DEMO_MODE: z.enum(['true', 'false']).default('false'),
   }).parse({ ...env, DATABASE_URL: env.DATABASE_URL || undefined });

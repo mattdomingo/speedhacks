@@ -19,7 +19,7 @@ const config = {
   DEMO_CALLER_NUMBER: '+14155550123', DEMO_MODE: 'true',
 };
 
-async function fixture(t) {
+async function fixture(t, overrides = {}, physicalOptions) {
   let reopen;
   if (process.env.TEST_DATABASE_URL) {
     const admin = new PostgresClient({ connectionString: process.env.TEST_DATABASE_URL, connectionTimeoutMillis: 10_000 });
@@ -41,7 +41,7 @@ async function fixture(t) {
     reopen = () => openStore(dir);
   }
   const store = reopen();
-  const server = createApp(config, store).listen(0, '127.0.0.1');
+  const server = createApp({ ...config, ...overrides }, store, physicalOptions).listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(async () => {
     server.closeAllConnections();
@@ -192,4 +192,48 @@ test('failed asynchronous writes return an error, never a successful upload', as
   });
   assert.equal(response.status, 500);
   assert.deepEqual(await response.json(), { error: 'Internal server error' });
+});
+
+test('real frames reach authenticated MCP with aliases, evidence photographs and freshness', async t => {
+  const base = Date.now();
+  let now = base;
+  const { store, url } = await fixture(t, { DEMO_MODE: 'false', GEMINI_API_KEY: 'test-only' }, {
+    now: () => now,
+    analyze: async () => ({ detections: [{ object: 'keys', location: 'beside the mug',
+      bbox: [100, 100, 200, 200], resting: true, uncertain: false }] }),
+  });
+  await seedDemo(store);
+  const client = await connect(t, url, { 'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'inbound' });
+  const lookup = object => client.callTool({ name: 'find_object', arguments: { object } });
+  assert.equal((await lookup('my keys')).structuredContent.status, 'unknown');
+  const headers = { Authorization: `Bearer ${config.CAMERA_TOKEN}`, 'Content-Type': 'application/json' };
+  let capture;
+  for (const second of [0, 5]) {
+    now = base + second * 1000;
+    const response = await fetch(`${url}/camera/frame`, { method: 'POST', headers,
+      body: JSON.stringify({ timestamp: new Date(now).toISOString(), jpegBase64: '/9j/2Q==' }) });
+    capture = await response.json();
+    assert.equal(capture.inference, 'analyzed');
+    assert.equal(capture.confirmed, second === 5 ? 1 : 0);
+  }
+  const answer = (await lookup('my keyring')).structuredContent;
+  assert.equal(answer.status, 'supported');
+  assert.equal(answer.evidence[0].demo, false);
+  assert.equal(answer.evidence[0].timestamp, new Date(now).toISOString());
+  assert.equal(answer.camera.status, 'live');
+  assert.equal((await lookup('cellphone')).structuredContent.status, 'unknown');
+  assert.equal((await fetch(`${url}/camera/status`)).status, 401);
+  assert.equal((await fetch(`${url}/camera/status`, { headers: { Authorization: `Bearer ${config.DIAL_MCP_TOKEN}` } })).status, 401);
+  const evidenceUrl = `${url}/camera/evidence/${capture.frameId}`;
+  assert.equal((await fetch(evidenceUrl)).status, 401);
+  const photograph = await fetch(evidenceUrl, { headers });
+  assert.equal(photograph.headers.get('cache-control'), 'no-store');
+  assert.equal(photograph.headers.get('x-captured-at'), answer.evidence[0].timestamp);
+  assert.deepEqual(Buffer.from(await photograph.arrayBuffer()), Buffer.from('/9j/2Q==', 'base64'));
+  assert.equal((await fetch(`${url}/camera/evidence/${'0'.repeat(64)}`, { headers })).status, 404);
+  now += 61_000;
+  const stale = (await lookup('keys')).structuredContent;
+  assert.equal(stale.status, 'supported');
+  assert.equal(stale.camera.status, 'stale');
+  assert.deepEqual(stale.evidence, answer.evidence);
 });

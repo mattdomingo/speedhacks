@@ -2,6 +2,8 @@ import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { frameSchema, observationSchema } from '../contracts/index.mjs';
 import { handleMcp } from './voice/mcp.mjs';
+import { createPhysicalMemory } from './physical/pipeline.mjs';
+import { frameId } from './physical/state.mjs';
 
 function bearer(token) {
   return (req, res, next) => {
@@ -22,12 +24,14 @@ function validateTimestamp(timestamp) {
   }
 }
 
-export function createApp(config, store) {
+export function createApp(config, store, physicalOptions) {
   const app = express();
+  const physical = createPhysicalMemory(config, store, physicalOptions);
   app.disable('x-powered-by');
   app.get('/health', (_req, res) => res.json({ ok: true, demo: config.DEMO_MODE === 'true' }));
   app.use('/mcp', bearer(config.DIAL_MCP_TOKEN));
   app.use('/camera', bearer(config.CAMERA_TOKEN));
+  app.use('/camera', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use(express.json({ limit: '1mb' }));
 
   app.all('/mcp', async (req, res) => {
@@ -36,7 +40,9 @@ export function createApp(config, store) {
     const authorized = config.DEMO_CALLER_NUMBER !== '' &&
       req.get('x-dial-user-number') === config.DEMO_CALLER_NUMBER &&
       req.get('x-dial-direction') === 'inbound';
-    await handleMcp(req, res, store, authorized);
+    await handleMcp(req, res, store, authorized, {
+      includeDemo: config.DEMO_MODE === 'true', cameraStatus: () => physical.status(),
+    });
   });
 
   app.post('/camera/observations', async (req, res) => {
@@ -52,8 +58,19 @@ export function createApp(config, store) {
       jpeg.at(-2) !== 0xff || jpeg.at(-1) !== 0xd9) {
       return res.status(400).json({ error: 'Expected JPEG, at most 500 KB' });
     }
-    await store.saveFrame(frame.timestamp, jpeg);
-    res.status(201).json({ status: 'stored', inference: 'not_configured', timestamp: frame.timestamp });
+    const stored = await store.saveFrame(frame.timestamp, jpeg);
+    // Await inference inside the request; Vercel may suspend work after a response.
+    const result = stored ? await physical.processLatest()
+      : { inference: config.GEMINI_API_KEY ? 'ignored' : 'not_configured' };
+    res.status(201).json({ status: stored ? 'stored' : 'ignored', timestamp: frame.timestamp,
+      frameId: frameId({ timestamp: frame.timestamp, jpeg }), ...result });
+  });
+  app.get('/camera/status', async (_req, res) => res.json(await physical.status()));
+  app.get('/camera/evidence/:frameId', async (req, res) => {
+    if (!/^[a-f0-9]{64}$/.test(req.params.frameId)) return res.status(404).json({ error: 'No retained evidence frame' });
+    const frame = await store.cameraSnapshot(req.params.frameId);
+    if (!frame) return res.status(404).json({ error: 'No retained evidence frame' });
+    res.set('X-Captured-At', frame.timestamp).type('jpeg').send(Buffer.from(frame.jpeg));
   });
   app.get('/camera/frame', async (req, res) => {
     const frame = await store.latestFrame();
