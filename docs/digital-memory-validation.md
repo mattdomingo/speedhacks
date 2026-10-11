@@ -1,6 +1,6 @@
 # Digital-memory integration validation — October 11, 2026
 
-Production Google connection, database persistence, authenticated sync, and signed Dial webhook delivery passed the checks below. The user confirmed the shared Dial team, and its production webhook was configured and tested. Keewano received hosted sync/webhook telemetry and a synthetic SDK probe. Production Context MCP, a real production phone conversation, and reminder delivery remain unverified. This is dated evidence, not a continuing production guarantee.
+Production Google connection, database persistence, authenticated sync, signed Dial webhook delivery, and Context MCP discovery passed the checks below. The user confirmed the shared Dial team, whose production MCP connection showed seven tools. Keewano received hosted sync/webhook telemetry and a synthetic SDK probe. A real production phone conversation, caller headers, PIN enforcement during a call, and reminder delivery remain unverified. This is dated evidence, not a continuing production guarantee.
 
 ## Deployment and automated checks
 
@@ -26,9 +26,10 @@ Times below are October 11 in Pacific daylight time, with UTC values where recor
 | Persisted Google credentials | Database inspection confirmed an encrypted refresh-token envelope and explicit Google `token_origin`; production had no alternate Google endpoint configuration |
 | Subsequent authenticated sync | `GET /cron/google-sync` with the configured cron credential returned HTTP 200, successful Calendar/Gmail results with counts 10/100, and the `prunedDialEvents` field. That check recorded successful sync timestamps of 14:23:24/14:23:27 PDT (`21:23:24Z`/`21:23:27Z`), with no errors. The connection remained present with counts 10/100 and no sync errors after the final redeployment |
 | Signed Dial test ping | In the authorized shared team, an additional production webhook was created and its signing secret deployed. The provider dashboard confirmed “Ping delivered”; the latest retained ping was timestamped 14:31:16.276 PDT (`21:31:16.276Z`) |
+| Production Context MCP | The shared team's dashboard showed “Recall memory (production)” as Connected at `https://recall-kappa-nine.vercel.app/mcp`, using Static Auth, with seven tools. This establishes connection and discovery, not authorization or memory retrieval during a real call |
 | Keewano ingestion | With the production SDK key enabled, a console aggregate returned four `GoogleSync` events and one `DialEvent`, confirming hosted sync/webhook telemetry receipt. An earlier query also returned one `ToolCalled` and one `NoEvidence` for synthetic tool label `readiness_smoke_synthetic`. These checks do not prove complete event delivery or telemetry from a real hosted phone call |
 
-The shared team's production webhook filters `call.ended` and `call.transcribed`; the provider test ping also reaches the receiver. Production now uses that webhook's signing secret in place of the earlier separate-account secret. The shared team's existing local-tunnel Context MCP connection, showing seven tools, and its existing webhook were preserved. Production Context MCP was not connected.
+The shared team's production webhook filters `call.ended` and `call.transcribed`; the provider test ping also reaches the receiver. Production now uses that webhook's signing secret in place of the earlier separate-account secret. The team subsequently replaced its local-tunnel Context MCP entry with the production connection above; no duplicate MCP entry was added. The existing local webhook and production `DIAL_MCP_TOKEN` were preserved.
 
 Retention is configured for 30 days. Google sync and retention cleanup are scheduled every ten minutes; reminder processing is scheduled every minute. The authenticated manual cron check establishes endpoint behavior, not proof that a scheduled invocation ran or that an expired event was deleted.
 
@@ -36,7 +37,7 @@ Google OAuth remains in Testing mode, where refresh tokens expire after seven da
 
 ## Remaining acceptance checks
 
-- **Production Dial conversation:** The shared team is confirmed and its local-test MCP connection remains present. The existing production `DIAL_MCP_TOKEN` was preserved; its secure handoff is pending, so production Context MCP is not connected. Complete that connection, verify caller headers on a real allowed inbound call, then test supported evidence and unknown/error answers with the required PIN. No real production phone call was completed in this run.
+- **Production Dial conversation:** Production Context MCP is connected and has discovered seven tools. Verify caller headers on a real allowed inbound call, then test supported evidence and unknown/error answers with the required PIN. No real production phone call was completed in this run; discovery alone does not verify caller authorization or PIN enforcement.
 - **Reminders:** `DIAL_API_KEY` was subsequently present in production and absent in preview. Presence does not verify the credential or authorize a test call. Separately verify reminder delivery and any fallback text with the intended recipient.
 - **Keewano product events:** After a real hosted call, confirm its expected tool events appear in Keewano without personal content. Keep that proof separate from the hosted sync/webhook events and synthetic tool probe above.
 - **Scheduled operation:** Confirm the deployed cron invocations succeed and exercise retention against a controlled expired test event. Use `npm run google -- status` and `npm run google -- sync` with the intended backend when repeating connection checks. Apply schema changes with `npm run db:init` only after selecting the intended database explicitly; follow the [deployment instructions](../README.md#vercel-and-managed-postgres).
