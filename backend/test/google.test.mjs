@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createApp } from '../app.mjs';
@@ -667,4 +668,120 @@ test('on Vercel, Google or Dial webhooks require CRON_SECRET', () => {
   assert.throws(() => readConfig({ ...base, ...google }), /CRON_SECRET/);
   assert.equal(readConfig({ ...base, ...google, CRON_SECRET: 'r'.repeat(64) }).CRON_SECRET, 'r'.repeat(64));
   assert.equal(readConfig({ ...base, VERCEL: undefined, DIAL_WEBHOOK_SECRET: 'w'.repeat(32) }).CRON_SECRET, undefined);
+});
+
+test('Google endpoints can point at a local same-URL mock such as a Sparta World, and only locally', async t => {
+  const base = { DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64) };
+  assert.throws(() => readConfig({ ...base, GOOGLE_API_BASE_URL: 'https://evil.example.com' }), /localhost/);
+  assert.throws(() => readConfig({ ...base, GOOGLE_OAUTH_BASE_URL: 'http://10.0.0.5:8080' }), /localhost/);
+  assert.throws(() => readConfig({ ...base, VERCEL: '1', DATABASE_URL: TEST_DATABASE_URL,
+    GOOGLE_API_BASE_URL: 'http://127.0.0.1:8080' }), /not allowed on Vercel/);
+  assert.equal(readConfig({ ...base, GOOGLE_API_BASE_URL: 'http://[::1]:8080' }).GOOGLE_API_BASE_URL, 'http://[::1]:8080');
+
+  const store = await testStore(t);
+  const seen = [];
+  const world = createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://world');
+    seen.push(`${req.method} ${url.pathname}`);
+    for await (const _chunk of req);
+    const json = (body, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (url.pathname === '/token') {
+      return json({ access_token: 'world-access', expires_in: 3600, refresh_token: 'world-refresh', scope: Object.values(SCOPES).join(' ') });
+    }
+    if (url.pathname === '/calendar/v3/calendars/primary') return json({ id: 'world@example.com', timeZone: ZONE });
+    if (url.pathname === '/calendar/v3/calendars/primary/events') {
+      return json({ items: [{ id: 'w1', status: 'confirmed', summary: 'World lunch',
+        start: { dateTime: `${today}T12:00:00-07:00` }, end: { dateTime: `${today}T13:00:00-07:00` } }] });
+    }
+    if (url.pathname === '/gmail/v1/users/me/messages') return json({ messages: [{ id: 'g1', threadId: 't1' }] });
+    if (url.pathname === '/gmail/v1/users/me/messages/g1') {
+      return json({ id: 'g1', threadId: 't1', internalDate: String(Date.now()), snippet: 'Hello from the world',
+        payload: { headers: [{ name: 'From', value: 'World <w@example.com>' }, { name: 'Subject', value: 'Hi' }] } });
+    }
+    json({ error: { status: 'NOT_FOUND' } }, 404);
+  }).listen(0, '127.0.0.1');
+  await once(world, 'listening');
+  t.after(() => new Promise(resolve => world.close(resolve)));
+  const origin = `http://127.0.0.1:${world.address().port}`;
+  const local = { ...config, GOOGLE_API_BASE_URL: origin, GOOGLE_OAUTH_BASE_URL: origin };
+  // Real network calls through global fetch, as against a running Sparta World.
+  const google = createGoogle({ config: local, store, log: quietLog });
+  const consent = new URL(await google.beginConnect());
+  assert.equal(consent.origin, origin);
+  assert.deepEqual(await google.completeConnect('code', consent.searchParams.get('state')),
+    { email: 'world@example.com', scopes: Object.values(SCOPES) });
+  assert.deepEqual((await google.syncAll()).map(result => result.ok), [true, true]);
+  assert.deepEqual(await store.countByOrigin(), { 'google-calendar': 1, 'google-gmail': 1 });
+  assert.ok(['POST /token', 'GET /calendar/v3/calendars/primary/events', 'GET /gmail/v1/users/me/messages/g1']
+    .every(call => seen.includes(call)));
+});
+
+
+test('loopback Google endpoints cannot redirect credentials or authenticated requests', async t => {
+  const store = await testStore(t);
+  let forwarded = 0;
+  const receiver = createServer(async (req, res) => {
+    forwarded++;
+    for await (const _chunk of req);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('{}');
+  }).listen(0, '127.0.0.1');
+  await once(receiver, 'listening');
+  const destination = `http://127.0.0.1:${receiver.address().port}/forwarded`;
+  let redirectPath = '/token';
+  let scope = Object.values(SCOPES).join(' ');
+  const world = createServer(async (req, res) => {
+    const path = new URL(req.url, 'http://world').pathname;
+    for await (const _chunk of req);
+    if (path === redirectPath) {
+      // 307 preserves POST bodies, including the OAuth client secret and refresh token.
+      res.writeHead(307, { Location: destination });
+      return res.end();
+    }
+    const json = body => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (path === '/token') return json({ access_token: 'local-access', refresh_token: 'local-refresh', expires_in: 3600, scope });
+    if (path === '/calendar/v3/calendars/primary') return json({ id: 'local@example.com', timeZone: ZONE });
+    if (path === '/gmail/v1/users/me/profile') return json({ emailAddress: 'local@example.com' });
+    if (path.endsWith('/events')) return json({ items: [] });
+    if (path.endsWith('/messages')) return json({ messages: [] });
+    json({});
+  }).listen(0, '127.0.0.1');
+  await once(world, 'listening');
+  t.after(async () => {
+    world.closeAllConnections();
+    receiver.closeAllConnections();
+    await Promise.all([new Promise(resolve => world.close(resolve)), new Promise(resolve => receiver.close(resolve))]);
+  });
+  const origin = `http://127.0.0.1:${world.address().port}`;
+  const local = readConfig({ ...config, GOOGLE_API_BASE_URL: origin, GOOGLE_OAUTH_BASE_URL: origin });
+  const google = createGoogle({ config: local, store, log: quietLog });
+  await assert.rejects(authorize(google), /fetch failed/);
+  assert.equal(await store.googleConnection(), undefined);
+  assert.equal(forwarded, 0, 'authorization-code POST must not follow a 307');
+
+  // Each metadata request uses the same redirect policy even though optional metadata errors
+  // are tolerated by the connection flow. Gmail-only consent exercises its profile fallback.
+  for (const path of ['/calendar/v3/calendars/primary', '/gmail/v1/users/me/profile']) {
+    redirectPath = path;
+    scope = path.includes('/gmail/') ? SCOPES.gmail : SCOPES.calendar;
+    assert.equal((await authorize(google)).email, null);
+    assert.equal(forwarded, 0, `${path} must not forward its bearer token`);
+  }
+  redirectPath = null;
+  scope = Object.values(SCOPES).join(' ');
+  await authorize(google);
+  for (const path of ['/calendar/v3/calendars/primary/events', '/gmail/v1/users/me/messages']) {
+    redirectPath = path;
+    await assert.rejects(path.includes('/gmail/') ? google.searchMail('passport') : google.fetchDay(today), /fetch failed/);
+    assert.equal(forwarded, 0, `${path} must not follow redirects`);
+  }
+  // A cold worker must also refuse to forward the saved refresh token.
+  redirectPath = '/token';
+  const other = createGoogle({ config: local, store, log: quietLog });
+  await assert.rejects(other.fetchDay(today), /fetch failed/);
+  assert.equal(forwarded, 0, 'refresh-token POST must not follow a 307');
+  redirectPath = '/revoke';
+  await google.disconnect();
+  assert.equal(forwarded, 0, 'revocation POST must not follow a 307');
+  assert.equal(await store.googleConnection(), undefined);
 });

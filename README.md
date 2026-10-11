@@ -269,7 +269,7 @@ Do not use ephemeral container storage for SQLite. Neither Compose nor the Docke
 | Keewano | Tool, latency, evidence-origin, sync and call-event analytics | Optional event reporting; `KEEWANO_API_KEY` enables it. No product query loop is implemented |
 | Alike | Shared decisions for coding agents (see [AGENTS.md](AGENTS.md#alike-coordination-when-connected)) | Development workflow; inspect capture/privacy settings before sharing sensitive work |
 | Darwin | Agent discovery | Not integrated; current memory retrieval does not need provider discovery |
-| Sparta | Local synthetic business-API testing | Not integrated. The supplied kit has Stripe and a demo ticket desk, **no Gmail or Calendar**; do not redirect Google OAuth endpoints to it |
+| Sparta | Local synthetic business-API testing | Generic loopback Google-mock endpoints are implemented; Sparta compatibility is unverified. The supplied kit has Stripe and a demo ticket desk, **no Gmail or Calendar** |
 
 Offers checked against the [event resources](https://hackersquad.io/events/speedhacks-oct11/resources?tab=resources) on October 11, 2026; published offers do not prove account redemption:
 
@@ -280,6 +280,8 @@ Offers checked against the [event resources](https://hackersquad.io/events/speed
 - **Sparta:** the [supplied starter](https://drive.google.com/file/d/1UdeeG0AtDsgHZbY-4fMcFRGozUCbVt-0/view) is free for local/internal testing and CI, without signup or bundled model credits. Its pinned `sparta_worlds@0.9.0-beta.3` needs Node 24+, so any experiment belongs in a separate harness. The [award rubric](https://drive.google.com/file/d/1B5u9p0D7WcUOlBL2t_389wMY2-n9WSpi/view) requires a sandbox test, failure, fix and comparable rerun.
 
 The listed event resources provide no general Vercel, cloud or Postgres credit offer. Keep the existing infrastructure; Keewano analytics does not replace the evidence database. Partner awards are optional for the overall competition. The [submission rules](https://hackersquad.io/events/speedhacks-oct11/resources?tab=rules) require project details, accessible source and a demo of at most five minutes, explicitly submitted by **October 11, 2026, 5 PM PDT**. Label mocks and distinguish measured time savings from estimates.
+
+For a local mock implementing Google's API paths, use an isolated test database and test-only OAuth credentials. Set `GOOGLE_API_BASE_URL=http://127.0.0.1:PORT`; set `GOOGLE_OAUTH_BASE_URL` to the mock OAuth origin to exercise consent and token exchange locally. Unset endpoints still target real Google. Start the mock, run `npm start`, then `npm run google -- connect`; verify the read-only adapter leaves the mock's records unchanged. Both overrides accept only `localhost`, `127.0.0.1` or `[::1]`, are refused on Vercel, and trigger a boot warning. These options do not supply a Gmail/Calendar mock or prove a Sparta integration.
 
 Keewano receives no phone numbers or personal content: callers become HMAC-derived UUIDs, rejected callers share one anonymous ID, and events carry only tool names, counts, latency and origin labels. Without a persistent disk (Vercel), batches stay in memory and ship within about two seconds. Event definitions live in `backend/analytics/keewano.events.json`; append (never reorder), then run `npm run keewano:codegen`, which converts Keewano's generated TypeScript to plain JS with Node's built-in type stripping. CI fails if the generated file is stale.
 

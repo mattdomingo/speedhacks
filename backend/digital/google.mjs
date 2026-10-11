@@ -5,11 +5,22 @@ export const SCOPES = {
   calendar: 'https://www.googleapis.com/auth/calendar.readonly',
   gmail: 'https://www.googleapis.com/auth/gmail.readonly',
 };
-const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
-const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
-const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
+
+// Real Google unless GOOGLE_API_BASE_URL / GOOGLE_OAUTH_BASE_URL name a local same-URL mock such
+// as a Sparta World (DEC-015). config.mjs only accepts loopback hosts and refuses them on Vercel,
+// because tokens are sent wherever these point. Credentialed fetches reject redirects so
+// a mock cannot forward an OAuth form body or authenticated API request to another host.
+export function endpoints(config = {}) {
+  const api = config.GOOGLE_API_BASE_URL?.replace(/\/+$/, '');
+  const oauth = config.GOOGLE_OAUTH_BASE_URL?.replace(/\/+$/, '');
+  return {
+    auth: oauth ? `${oauth}/o/oauth2/v2/auth` : 'https://accounts.google.com/o/oauth2/v2/auth',
+    token: oauth ? `${oauth}/token` : 'https://oauth2.googleapis.com/token',
+    revoke: oauth ? `${oauth}/revoke` : 'https://oauth2.googleapis.com/revoke',
+    calendar: `${api ?? 'https://www.googleapis.com'}/calendar/v3`,
+    gmail: `${api ?? 'https://gmail.googleapis.com'}/gmail/v1/users/me`,
+  };
+}
 
 // Synced calendar window relative to today; dates outside it are fetched live.
 const PAST_DAYS = 7;
@@ -141,6 +152,7 @@ async function mapLimit(items, limit, fn) {
 export function createGoogle({ config, store, fetch = globalThis.fetch, log = console, onSync = () => {} }) {
   const configured = Boolean(config.GOOGLE_CLIENT_ID);
   const key = configured ? Buffer.from(config.GOOGLE_TOKEN_KEY, 'hex') : undefined;
+  const { auth: AUTH_URL, token: TOKEN_URL, revoke: REVOKE_URL, calendar: CALENDAR_API, gmail: GMAIL_API } = endpoints(config);
   const calendarIds = (config.GOOGLE_CALENDAR_IDS || 'primary').split(',').map(id => id.trim()).filter(Boolean);
   const syncMinutes = config.GOOGLE_SYNC_MINUTES ?? 10;
   // Per-instance cache only; serverless instances each refresh their own access token.
@@ -196,7 +208,7 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
 
   async function tokenRequest(params, signal = AbortSignal.timeout(10_000), generation) {
     const response = await fetch(TOKEN_URL, {
-      method: 'POST', signal,
+      method: 'POST', signal, redirect: 'error',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         client_id: config.GOOGLE_CLIENT_ID, client_secret: config.GOOGLE_CLIENT_SECRET, ...params,
@@ -243,6 +255,7 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
   async function api(url, context, signal = AbortSignal.timeout(10_000)) {
     for (const force of [false, true]) {
       const response = await fetch(url, {
+        redirect: 'error',
         headers: { Authorization: `Bearer ${await token(context, force, signal)}`, Accept: 'application/json' },
         signal,
       });
@@ -345,6 +358,7 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
       // Resolve account metadata with the new token before committing anything. The
       // single final save is conditional on the generation claimed with OAuth state.
       const oauthApi = async url => apiResponse(await fetch(url, {
+        redirect: 'error',
         headers: { Authorization: `Bearer ${body.access_token}`, Accept: 'application/json' },
         signal: AbortSignal.timeout(10_000),
       }));
@@ -373,7 +387,7 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
         // Best effort: local deletion must not depend on decrypting the token or reaching Google.
         try {
           await fetch(REVOKE_URL, {
-            method: 'POST', signal: AbortSignal.timeout(10_000),
+            method: 'POST', signal: AbortSignal.timeout(10_000), redirect: 'error',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: new URLSearchParams({ token: unseal(key, row.refresh_token) }),
           });
