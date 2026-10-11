@@ -82,7 +82,7 @@ Health: `http://127.0.0.1:3000/health`. MCP: `http://127.0.0.1:3000/mcp`. Watch 
 | `GET /cron/google-sync` | `Bearer CRON_SECRET` | Vercel Cron: sync Google and prune expired Dial events |
 | `POST /webhooks/dial` | `X-Dial-Signature` HMAC | Store Dial call/message events (deduplicated, pruned after retention) |
 
-With `CALLER_PIN` set, each memory tool also takes `pin`; without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Five wrong PINs lock that caller number out for 15 minutes.
+With `CALLER_PIN` set, each memory tool also takes `pin`; without it the tool answers "A PIN is required" and the voice agent asks the caller (see `backend/voice/instructions.txt`). Every supplied PIN is counted before it is compared, so at most five guesses per caller number are evaluated in 15 minutes, however many arrive at once; `/mcp` also rejects JSON-RPC batches.
 
 Observation body:
 
@@ -121,7 +121,7 @@ How retrieval works during a call:
 2. In Dial Context MCP settings, add `https://recall-kappa-nine.vercel.app/mcp` with static header `Authorization: Bearer YOUR_DIAL_MCP_TOKEN`.
 3. Configure the number's inbound instruction with `backend/voice/instructions.txt`.
 4. Set `DEMO_CALLER_NUMBER` (and `CALLER_PIN`), then call from that number with `DIAL_LOG_HEADERS=true` once. The log lists the header names Dial sent, with phone numbers cut to their last four digits and other Dial values reduced to their length. If the caller and direction headers differ from the defaults, set `DIAL_CALLER_HEADER` and `DIAL_DIRECTION_HEADER`, then turn logging off.
-5. Optional: in the Dial dashboard, add a webhook to `https://…/webhooks/dial` and put its signing secret in `DIAL_WEBHOOK_SECRET`. Events such as `call.ended` and `call.transcribed` are stored once each; transcripts contain personal speech, so retention defaults to 30 days.
+5. Optional: in the Dial dashboard, add a webhook to `https://…/webhooks/dial` and put its signing secret in `DIAL_WEBHOOK_SECRET` (on Vercel also `CRON_SECRET`, which the daily cleanup needs; boot fails without it). Events such as `call.ended` and `call.transcribed` are stored once each; transcripts contain personal speech, so retention defaults to 30 days and the cron keeps pruning even after webhooks are switched off.
 
 Dial is expected to supply `X-Dial-User-Number` and `X-Dial-Direction` during calls; public Dial sources do not confirm these names, hence step 4. The backend checks the configured caller and inbound direction. Tool discovery works without caller headers; data retrieval does not. Connection credentials alone never authorize a caller.
 

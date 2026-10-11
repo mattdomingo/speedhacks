@@ -43,12 +43,15 @@ export function createApp(config, store, physicalOptions, {
   app.use('/camera', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use(express.json({ limit: '1mb' }));
   app.use('/google', googleRoutes(google, bearer(config.ADMIN_TOKEN)));
-  app.use('/cron', cronRoutes(google, bearer(config.CRON_SECRET), {
-    store, retentionDays: config.DIAL_EVENT_RETENTION_DAYS, dialWebhooks: Boolean(config.DIAL_WEBHOOK_SECRET),
-  }));
+  app.use('/cron', cronRoutes(google, bearer(config.CRON_SECRET), { store, retentionDays: config.DIAL_EVENT_RETENTION_DAYS }));
 
   app.all('/mcp', async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();
+    // One message per request: batches would let one request run many tool calls (and PIN
+    // guesses) at once. Dial sends single messages, and MCP 2025-06-18 removed batching.
+    if (Array.isArray(req.body)) {
+      return res.status(400).json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Batch requests are not supported' } });
+    }
     if (config.DIAL_LOG_HEADERS === 'true') console.log(`MCP headers: ${describeHeaders(req.headers)}`);
     // shortcut: caller ID is only a demo allowlist; CALLER_PIN adds a second factor. Add verified
     // identity and user-scoped storage before multiple users' personal data.

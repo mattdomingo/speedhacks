@@ -10,6 +10,7 @@ import { testStore, TEST_DATABASE_URL, vercelHelpers } from './helpers.mjs';
 import { seedDemo } from '../demo.mjs';
 import { describeHeaders, verifyDialSignature } from '../voice/webhooks.mjs';
 import { smokeObjectMemory } from '../../scripts/smoke-object-memory.mjs';
+import { checkPin } from '../voice/pin.mjs';
 
 const config = readConfig({
   DIAL_MCP_TOKEN: 'd'.repeat(64), CAMERA_TOKEN: 'c'.repeat(64), DIAL_WEBHOOK_SECRET: 'w'.repeat(32),
@@ -132,4 +133,42 @@ test('the MCP smoke client keeps working when the backend requires a PIN', async
   await assert.rejects(smokeObjectMemory(url, config.DIAL_MCP_TOKEN, config.DEMO_CALLER_NUMBER), /returned an error/);
   const results = await smokeObjectMemory(url, config.DIAL_MCP_TOKEN, config.DEMO_CALLER_NUMBER, '4821');
   assert.deepEqual(Object.keys(results), ['my keys', 'cellphone', 'wallet']);
+});
+
+test('concurrent PIN guesses are counted before comparison, across instances', async t => {
+  const store = await testStore(t);
+  const second = store.reopen();
+  t.after(() => second.close());
+  const guesses = Array.from({ length: 20 }, (_, i) => checkPin(i % 2 ? store : second, '4821', config.DEMO_CALLER_NUMBER, String(1000 + i)));
+  const outcomes = await Promise.all(guesses);
+  assert.ok(outcomes.filter(outcome => outcome === 'pin_wrong').length <= 5);
+  assert.equal(outcomes.filter(outcome => outcome !== 'pin_wrong' && outcome !== 'pin_locked').length, 0);
+  assert.equal(await checkPin(store, '4821', config.DEMO_CALLER_NUMBER, '4821'), 'pin_locked');
+  assert.equal(await checkPin(store, '4821', '+14155550999', '4821'), null, 'other callers are unaffected');
+});
+
+test('MCP rejects batched requests and hides PIN-check database errors', async t => {
+  const { url, store } = await fixture(t, { CALLER_PIN: '4821' });
+  const headers = { Authorization: `Bearer ${config.DIAL_MCP_TOKEN}`, 'Content-Type': 'application/json',
+    Accept: 'application/json, text/event-stream', 'X-Dial-User-Number': config.DEMO_CALLER_NUMBER, 'X-Dial-Direction': 'inbound' };
+  const call = (id, pin) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'find_object', arguments: { object: 'keys', pin } } });
+  const batch = await fetch(`${url}/mcp`, { method: 'POST', headers, body: JSON.stringify([call(1, '1000'), call(2, '1001')]) });
+  assert.equal(batch.status, 400);
+  await store.sql('DROP TABLE caller_pin_failure');
+  const broken = await fetch(`${url}/mcp`, { method: 'POST', headers, body: JSON.stringify(call(3, '4821')) });
+  const { result } = await broken.json();
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /^Memory lookup failed/);
+  assert.ok(!/caller_pin_failure|relation|table/i.test(result.content[0].text));
+});
+
+test('the cron prunes expired Dial events even after webhooks are switched off', async t => {
+  const { url, store } = await fixture(t, { DIAL_WEBHOOK_SECRET: undefined, CRON_SECRET: 'r'.repeat(64) });
+  await store.recordDialEvent({ id: 'old', type: 'call.transcribed' }, 30);
+  await store.recordDialEvent({ id: 'new', type: 'call.ended' }, 30);
+  const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+  await store.sql(`UPDATE dial_event SET received_at = ${store.adapter === 'sqlite' ? '?' : '$1'} WHERE id = 'old'`, [old]);
+  const cron = await fetch(`${url}/cron/google-sync`, { headers: { Authorization: `Bearer ${'r'.repeat(64)}` } });
+  assert.equal((await cron.json()).prunedDialEvents, 1);
+  assert.deepEqual((await store.dialEvents()).map(event => event.id), ['new']);
 });
