@@ -57,10 +57,12 @@ export function googleRoutes(google, adminAuth) {
 
 // Vercel Cron calls this with `Authorization: Bearer $CRON_SECRET` (Hobby plans: once a day).
 // It also enforces Dial transcript retention, which otherwise only runs when a webhook arrives.
-export function cronRoutes(google, cronAuth, { store, retentionDays = 30 } = {}) {
+// Each part touches its tables only when its feature is configured, so an environment that has
+// not yet run `npm run db:init` for them keeps working.
+export function cronRoutes(google, cronAuth, { store, retentionDays = 30, dialWebhooks = false } = {}) {
   const router = express.Router();
   router.get('/google-sync', cronAuth, async (_req, res) => {
-    const pruned = store ? await store.pruneDialEvents(retentionDays) : 0;
+    const pruned = store && dialWebhooks ? await store.pruneDialEvents(retentionDays) : 0;
     if (!google.configured) return res.json({ skipped: 'Google integration is not configured', prunedDialEvents: pruned });
     res.json({ results: await google.syncAll(), prunedDialEvents: pruned });
   });

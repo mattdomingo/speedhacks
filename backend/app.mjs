@@ -43,7 +43,9 @@ export function createApp(config, store, physicalOptions, {
   app.use('/camera', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use(express.json({ limit: '1mb' }));
   app.use('/google', googleRoutes(google, bearer(config.ADMIN_TOKEN)));
-  app.use('/cron', cronRoutes(google, bearer(config.CRON_SECRET), { store, retentionDays: config.DIAL_EVENT_RETENTION_DAYS }));
+  app.use('/cron', cronRoutes(google, bearer(config.CRON_SECRET), {
+    store, retentionDays: config.DIAL_EVENT_RETENTION_DAYS, dialWebhooks: Boolean(config.DIAL_WEBHOOK_SECRET),
+  }));
 
   app.all('/mcp', async (req, res) => {
     if (req.method !== 'POST') return res.status(405).set('Allow', 'POST').end();

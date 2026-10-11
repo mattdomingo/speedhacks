@@ -408,3 +408,23 @@ test('setup appends only missing secrets to an existing .env', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a database without the new tables keeps serving while Google, PIN and webhooks are off', {
+  skip: !process.env.TEST_DATABASE_URL,
+}, async t => {
+  const store = await testStore(t);
+  // As on an environment that has not run `npm run db:init` since these tables were added.
+  await store.sql('DROP TABLE google_connection, oauth_state, sync_state, dial_event, caller_pin_failure');
+  const off = { ...config, GOOGLE_CLIENT_ID: undefined, CRON_SECRET: 'r'.repeat(64), DEMO_MODE: 'true' };
+  await store.put({ id: 'demo-calendar', source: 'calendar', date: today, text: 'DEMO plan', timestamp: new Date().toISOString(), demo: true });
+  const server = createApp(off, store, undefined, { google: createGoogle({ config: off, store }) }).listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const client = await mcp(t, url);
+  const plans = await client.callTool({ name: 'get_schedule', arguments: { date: today } });
+  assert.equal(plans.structuredContent.status, 'supported');
+  assert.equal((await client.callTool({ name: 'search_messages', arguments: { query: 'dinner' } })).isError, undefined);
+  const cron = await fetch(`${url}/cron/google-sync`, { headers: { Authorization: `Bearer ${off.CRON_SECRET}` } });
+  assert.equal(cron.status, 200);
+});
