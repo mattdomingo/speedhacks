@@ -152,6 +152,22 @@ test('reminder tools need the allowlisted caller on Steph\'s line; memories stay
   assert.equal((await outbound.callTool({ name: 'find_object', arguments: { object: 'keys' } })).isError, true);
 });
 
+test('reminders fail closed on PIN storage errors while the clock stays available', async t => {
+  const { url, store } = await fixture(t, { CALLER_PIN: '4821' });
+  const client = await connect(t, url, onCall());
+  const args = { text: 'Call Sarah', in_minutes: 5 };
+  const missing = await client.callTool({ name: 'set_reminder', arguments: args });
+  assert.equal(missing.isError, true);
+  assert.match(missing.content[0].text, /PIN is required/);
+  await store.sql('DROP TABLE caller_pin_failure');
+  const broken = await client.callTool({ name: 'set_reminder', arguments: { ...args, pin: '4821' } });
+  assert.equal(broken.isError, true);
+  assert.match(broken.content[0].text, /^Memory lookup failed/);
+  assert.doesNotMatch(broken.content[0].text, /caller_pin_failure|relation|table/i);
+  assert.equal((await client.callTool({ name: 'whats_today', arguments: {} })).isError, undefined);
+  assert.equal((await store.upcomingReminders(PATIENT)).length, 0);
+});
+
 test('dispatch is cron-authenticated and calls once per due reminder', async t => {
   const { url, dial, clock, store } = await fixture(t);
   assert.equal((await fetch(`${url}/cron/dial-reminders`)).status, 401);

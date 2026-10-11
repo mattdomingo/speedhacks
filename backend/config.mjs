@@ -65,6 +65,10 @@ export function readConfig(env = process.env) {
   if (google.some(key => key.startsWith('GOOGLE_CLIENT')) && google.length !== GOOGLE_KEYS.length) {
     throw new Error(`Google integration needs ${GOOGLE_KEYS.filter(key => !config[key]).join(', ')}`);
   }
+  // On Vercel the daily cron is the only scheduled Google sync and Dial-transcript cleanup.
+  if (env.VERCEL === '1' && (config.GOOGLE_CLIENT_ID || config.DIAL_WEBHOOK_SECRET) && !config.CRON_SECRET) {
+    throw new Error('Set CRON_SECRET on Vercel so the daily cron can sync Google and prune Dial events');
+  }
   if (config.GOOGLE_REDIRECT_URI) {
     const { protocol, hostname, pathname } = new URL(config.GOOGLE_REDIRECT_URI);
     if (protocol !== 'https:' && !LOCAL_HOSTS.includes(hostname)) {

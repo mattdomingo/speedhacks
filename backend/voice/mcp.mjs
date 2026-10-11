@@ -51,8 +51,15 @@ export async function handleMcp(req, res, store, caller, options = {}) {
         analytics.rejected({ tool: name, reason });
         return failure('Caller not authorized. No personal records were retrieved.');
       }
-      // The clock reveals nothing personal, so it skips the PIN.
-      const pinProblem = gate === 'clock' ? null : await checkPin(store, callerPin, caller.number, pin);
+      let pinProblem;
+      try {
+        // The clock reveals nothing personal, so it skips the PIN.
+        pinProblem = gate === 'clock' ? null : await checkPin(store, callerPin, caller.number, pin);
+      } catch (error) {
+        // Fail closed without passing database details to the voice agent.
+        console.error('PIN check failed:', error.message);
+        pinProblem = 'pin_error';
+      }
       if (pinProblem) {
         analytics.rejected({ tool: name, reason: pinProblem });
         return failure(PIN_MESSAGES[pinProblem]);

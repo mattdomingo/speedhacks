@@ -52,9 +52,11 @@ function decodeEntities(text) {
   });
 }
 
+// Also strips what Postgres jsonb rejects: NUL characters and unpaired UTF-16 surrogates (a
+// cut emoji). One bad string would otherwise fail the whole batch write of a sync.
 function clip(text, length) {
-  const clean = text.replace(/\s+/g, ' ').trim();
-  return clean.length > length ? `${clean.slice(0, length - 1)}…` : clean;
+  const clean = text.replace(/\u0000/g, '').replace(/\s+/g, ' ').trim().toWellFormed();
+  return clean.length > length ? `${clean.slice(0, length - 1).replace(/[\uD800-\uDBFF]$/, '')}…` : clean;
 }
 
 // Display names are chosen by the sender and easy to fake ("Mom", "Your bank"), so the
@@ -188,10 +190,17 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
     throw new GoogleError(`Google token request failed (${response.status} ${body.error ?? 'unknown_error'})`, { status: response.status });
   }
 
+  // The cache belongs to one stored refresh token: after another instance reconnects (possibly
+  // to a different account) or disconnects, this instance stops using the old access token.
   async function token(force, signal) {
-    if (!force && accessToken && accessToken.expiresAt > Date.now() + 60_000) return accessToken.value;
     const row = await connection();
-    if (!row || row.status !== 'connected') throw new GoogleError('Google account is not connected', { reconnect: true });
+    if (!row || row.status !== 'connected') {
+      accessToken = undefined;
+      throw new GoogleError('Google account is not connected', { reconnect: true });
+    }
+    if (!force && accessToken?.sealed === row.refresh_token && accessToken.expiresAt > Date.now() + 60_000) {
+      return accessToken.value;
+    }
     let refreshToken;
     try {
       refreshToken = unseal(key, row.refresh_token);
@@ -200,7 +209,7 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
       throw new GoogleError('Stored Google token cannot be decrypted (GOOGLE_TOKEN_KEY changed?); reconnect required', { reconnect: true });
     }
     const body = await tokenRequest({ grant_type: 'refresh_token', refresh_token: refreshToken }, signal);
-    accessToken = { value: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 };
+    accessToken = { value: body.access_token, expiresAt: Date.now() + body.expires_in * 1000, sealed: row.refresh_token };
     return accessToken.value;
   }
 
@@ -304,8 +313,8 @@ export function createGoogle({ config, store, fetch = globalThis.fetch, log = co
       // Users can untick scopes on the consent screen; keep only what was granted.
       const granted = (body.scope ?? '').split(' ').filter(scope => Object.values(SCOPES).includes(scope));
       if (!granted.length) throw new GoogleError('Calendar or Gmail read access is required', { status: 400 });
-      accessToken = { value: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 };
       const refreshToken = seal(key, body.refresh_token);
+      accessToken = { value: body.access_token, expiresAt: Date.now() + body.expires_in * 1000, sealed: refreshToken };
       await store.saveGoogleConnection({ scope: granted.join(' '), refreshToken });
       let email = null;
       let zone = null;
