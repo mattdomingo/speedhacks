@@ -257,7 +257,7 @@ test('live Google failures cannot fall back to retained demo evidence', async t 
   remote.failCalendar = true;
   const client = await mcp(t, url);
   const plans = () => client.callTool({ name: 'get_schedule', arguments: { date: today } });
-  const mail = () => client.callTool({ name: 'search_messages', arguments: { query: 'Sarah dinner' } });
+  const mail = () => client.callTool({ name: 'search_messages', arguments: { query: 'Maya dinner' } });
   assert.equal((await plans()).isError, true, 'demo plans do not hide a failed live calendar lookup');
   assert.equal((await mail()).structuredContent.status, 'unknown', 'demo email is not a fallback for a live miss');
   await store.markGoogleReconnectRequired((await store.googleSnapshot()).generation);

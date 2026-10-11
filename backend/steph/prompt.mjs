@@ -26,12 +26,35 @@ function localTime(iso, timeZone) {
   return new Intl.DateTimeFormat('en-US', { timeZone, dateStyle: 'full', timeStyle: 'short' }).format(new Date(iso));
 }
 
+// JSON with < and > escaped, so text such as "</memories>" inside a memory cannot close the data block.
+function dataLine(memory) {
+  return JSON.stringify(memory).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+}
+
+// Models misread ISO offsets (a 3 PM event stamped 22:00Z came back as "10 PM"), so each memory
+// carries its time already written in the person's own zone.
+function withLocalTime(memory, timeZone) {
+  if (!timeZone) return memory;
+  const { timestamp, ...rest } = memory;
+  return { ...rest, time: localTime(timestamp, timeZone) };
+}
+
 function context(memories, now, timeZone) {
-  return `<memories>\n${memories.map(memory => JSON.stringify(memory)).join('\n')}\n</memories>\n\n${UNTRUSTED}\nCurrent local time: ${localTime(now, timeZone)}`;
+  const lines = memories.map(memory => dataLine(withLocalTime(memory, timeZone)));
+  return `<memories>\n${lines.join('\n')}\n</memories>\n\n${UNTRUSTED}\nCurrent local time: ${localTime(now, timeZone)}`;
+}
+
+// The prompt only lets Steph use memories, so the clock is one: without it, "What time is it?"
+// came back "I'm not sure". The phone never sends this id; the app shows it as the clock.
+export const CLOCK_MEMORY_ID = 'clock-now';
+
+export function clockMemory(now, timeZone) {
+  return { id: CLOCK_MEMORY_ID, type: 'note', summary: `Right now it is ${localTime(now, timeZone || 'UTC')}.`,
+    people: [], timestamp: now, source: 'clock', confidence: 1 };
 }
 
 export function askTurn({ question, now, time_zone, memories }) {
-  return `${context(memories, now, time_zone)}\n\nQuestion: ${question}`;
+  return `${context([clockMemory(now, time_zone), ...memories], now, time_zone)}\n\nQuestion: ${question}`;
 }
 
 export function reminderTurn({ now, time_zone }, candidate) {
