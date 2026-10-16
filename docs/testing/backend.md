@@ -1,4 +1,6 @@
-# Backend, MCP and Dial testing
+# Backend, MCP and Dial testing — October 11, 2026
+
+Historical results from the hackathon test pass. Test counts and timings describe that revision and machine. See [validation](README.md) for current commands.
 
 Scope: the Express backend (Steph `/ask` `/reminders` `/embed`), the Recall MCP server Dial calls during phone calls, Dial webhooks, reminder calls, caregiver texts and `/health`. All automated tests use fakes for Claude, Voyage and Dial; nothing here called a real API, placed a call or sent a text.
 

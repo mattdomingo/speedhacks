@@ -1,7 +1,7 @@
 {
   "name": "speedhacks",
   "version": "1.0.0",
-  "description": "Phone memory assistant hackathon scaffold",
+  "description": "Memory assistant for iPhone and phone calls, built for the a16z SpeedHacks hackathon",
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "demo:medicine": "node scripts/demo-medicine-reminder.mjs",
