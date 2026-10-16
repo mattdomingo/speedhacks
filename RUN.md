@@ -1,124 +1,63 @@
 # Run Recall
 
-How to run the backend, connect Steph's phone line, run the app on the Simulator or your iPhone, and call Steph. Every command here was run on this Mac on 2026-10-11 unless it says otherwise.
+A local walkthrough of Recall, built for the **Andreessen Horowitz (a16z) SpeedHacks hackathon**. For API contracts and integration configuration, see the [development guide](docs/development.md).
 
-## 1. Backend
+## Backend
 
-Requires Node 22.15+ and npm.
+Requires Node.js 22.15–22.x and npm. From the repository root:
 
 ```sh
 npm ci
-npm run setup          # creates .env with fresh secrets; never overwrites existing values
+npm run setup
+npm start
 ```
 
-Add these to `.env` (gitignored; never commit it):
+Setup creates an ignored, owner-readable `.env` with distinct service tokens. Existing values are preserved. SQLite stores local data in the ignored `data/` directory; leave `DATABASE_URL` empty for this workflow.
 
-| Variable | Value |
-| --- | --- |
-| `GEMINI_API_KEY` | Steph's brain (`STEPH_PROVIDER=auto` uses Gemini when there is no `ANTHROPIC_API_KEY`) |
-| `DIAL_API_KEY` | Dial REST key (`sk_live_…`) |
-| `DEMO_CALLER_NUMBER` | The patient's phone, E.164 (the tester phone during testing) |
-| `CAREGIVER_NUMBER` | Who `notify_caregiver` and the daily summary text |
-| `DIAL_ALLOWED_NUMBERS` | Comma-separated E.164 allowlist. Dial calls/texts to anyone else are refused before any request |
-| `TIMEZONE` | The patient's IANA zone, e.g. `America/Los_Angeles` |
-| `DEMO_MODE` | `true` for the demo story |
-
-`DIAL_WEBHOOK_SECRET` is written by `npm run dial:connect` (step 2).
+In another terminal:
 
 ```sh
-npm run seed:demo      # the demo story for patient A (+ an isolated patient B)
-npm start              # http://127.0.0.1:$PORT (PORT in .env; 3187 on this Mac)
-curl -s http://127.0.0.1:3187/health
+curl --fail http://127.0.0.1:3000/health
 ```
 
-`/health` reports `checks` for the database, the Steph model provider, Dial and embeddings. Provider checks are cached for about a minute.
+Use the `PORT` from `.env` if you changed it. `/health` reports database readiness and whether optional provider credentials are configured. `/` returns 404 because there is no web frontend. Use `npm run dev` for watch mode.
 
-## 2. Public URL for Dial
-
-Dial needs HTTPS, so expose the local server with a tunnel:
+## Offline reminder demo
 
 ```sh
-cloudflared tunnel --no-autoupdate --url http://127.0.0.1:3187
-# prints https://<random>.trycloudflare.com
-npm run dial:connect -- https://<random>.trycloudflare.com
-# then restart the server (Ctrl-C, npm start) so it loads the new webhook secret
+npm run demo:medicine
 ```
 
-`dial:connect` replaces any earlier tunnel registrations, then:
-- registers the webhook for `call.ended`, `call.transcribed`, `message.received` and `message.status_changed` (text delivery receipts), and saves its signing secret to `.env`;
-- connects the Context MCP at `/mcp` with the `Authorization: Bearer $DIAL_MCP_TOKEN` header;
-- sets Steph's inbound instruction from `backend/voice/instructions.txt`;
-- fires a `webhook.ping`.
+This uses a temporary SQLite database, a simulated clock, and a fake Dial client. It demonstrates scheduling, a single dispatch, an answered call, and one missed-call fallback text. It sends no calls or messages and requires no provider credentials or running backend. The fictional reminder does not track whether medicine was taken.
 
-Registrations pointing anywhere other than a tunnel (production) are never touched. A quick tunnel gets a new URL every time it starts, so rerun `dial:connect` after restarting it.
+## iPhone demo
 
-## 3. App on the Simulator
+Requires macOS, Xcode 26, and an iOS 17+ simulator or device.
+
+1. Copy `ios/Config/Local.xcconfig.example` to the ignored `ios/Config/Local.xcconfig`.
+2. For a physical device, set your own `RECALL_TEAM` and a `RECALL_BUNDLE_ID` your team can sign. Free personal teams can use `Recall/Recall-NoSIWA.entitlements`.
+3. Open `ios/Recall.xcodeproj`, select the **Recall** scheme, and run on your simulator or device.
+4. Open Settings → **Demo memories**, or triple-tap the **Recall** wordmark, to load fictional memories.
+5. Type “Where are my keys?” or “Who's Sam again?” to explore the cards. **Show Priya reminder** opens the proactive reminder example.
+
+Leave `RECALL_APP_TOKEN` empty to use on-device answers. Optional model-backed answers and shared-memory pairing are described in the [iPhone guide](ios/README.md). A physical device is needed to validate microphone, notification, and background behavior.
+
+## Optional integrations
+
+The local demo does not require Google, Dial, or model-provider accounts. When connecting them, use an isolated test environment and the [development guide](docs/development.md#optional-integrations). Keep all credentials in ignored local configuration or your hosting provider's secure settings.
+
+- [Google Calendar and Gmail](docs/development.md#google-connection): connect a consented test account using read-only OAuth scopes.
+- [Dial voice and reminders](docs/development.md#connect-dial): configure a line you control, the authenticated MCP endpoint, and signed webhooks. Set `DIAL_ALLOWED_NUMBERS` to consented test recipients before exercising real delivery.
+- [Camera capture](docs/object-memory.md): install the Python dependencies and run the uploader on a machine with webcam access. Live recognition also needs a backend Gemini key.
+- [iPhone shared memories](docs/ios-memory.md): provision a separate per-device credential.
+
+## Checks
 
 ```sh
-cp ios/Config/Local.xcconfig.example ios/Config/Local.xcconfig
+npm test
+python3 -m unittest discover -s camera -p 'test_*.py'
+npm run keewano:codegen -- --check
+npm run demo:medicine
 ```
 
-Set these in `ios/Config/Local.xcconfig` (gitignored). Keep the `$()` in the URL, because xcconfig treats `//` as a comment:
-
-```
-RECALL_API_BASE_URL = https:/$()/<random>.trycloudflare.com
-RECALL_APP_TOKEN = <RECALL_APP_TOKEN from .env>
-```
-
-Build and launch:
-
-```sh
-cd ios
-xcodebuild -project Recall.xcodeproj -scheme Recall \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO build
-xcrun simctl boot 'iPhone 17 Pro' 2>/dev/null; open -a Simulator
-xcrun simctl install booted build/DD/Build/Products/Debug-iphonesimulator/Recall.app
-xcrun simctl launch booted com.speedhacks.recall
-```
-
-In the app:
-1. Tap **Get started**. Sign in with Apple is unavailable in unsigned simulator builds, so the app keeps a local profile.
-2. Tap **Yes, let's go**.
-3. On Home, triple-tap the **Recall** wordmark to load the demo memories.
-4. Type "Where are my keys?".
-
-## 4. App on your iPhone
-
-1. Copy the example config to `ios/Config/Local.xcconfig` as above, and set:
-   - `RECALL_TEAM`: your Apple team ID (Xcode → Settings → Accounts).
-   - `RECALL_BUNDLE_ID`: an ID your team can sign, e.g. `com.<you>.recall`.
-   - `RECALL_API_BASE_URL` and `RECALL_APP_TOKEN`: as in step 3.
-2. If you use a **free personal team**, also add `RECALL_ENTITLEMENTS = Recall/Recall-NoSIWA.entitlements`. Personal teams cannot use Sign in with Apple; the app then keeps a local-only profile.
-3. Plug in the iPhone and open `ios/Recall.xcodeproj`. Select the **Recall** scheme and your iPhone, then press Run.
-4. The first time only:
-   - Turn on **Settings → Privacy & Security → Developer Mode**, then restart the phone.
-   - With a personal team, trust the profile: **Settings → General → VPN & Device Management → your Apple ID → Trust**.
-Command-line alternative, which installed the app on the iPhone "ryan" on 2026-10-11. It uses the existing wildcard team profile, so no new App ID is needed:
-
-```sh
-cd ios
-xcodebuild -project Recall.xcodeproj -scheme Recall -destination 'generic/platform=iOS' \
-  -derivedDataPath build/DD-device RECALL_TEAM=3RXUMV93RN RECALL_BUNDLE_ID=com.ryanwang.recall \
-  RECALL_ENTITLEMENTS=Recall/Recall-NoSIWA.entitlements build
-xcrun devicectl list devices
-xcrun devicectl device install app --device <device id> build/DD-device/Build/Products/Debug-iphoneos/Recall.app
-```
-
-Apple refuses new App IDs and Sign in with Apple until the account holder accepts the updated Program License Agreement at developer.apple.com. Until then, use the wildcard profile as above.
-
-5. In the app:
-   - Allow the permissions.
-   - Triple-tap **Recall** for demo mode.
-   - Use **Settings → Show Priya reminder** for the reminder card, or **Buzz me in 10 seconds** for a real notification.
-
-## 5. Call Steph
-
-- **Steph's number:** +1 240-896-2183. Call from the phone set as `DEMO_CALLER_NUMBER`; other numbers get a polite refusal and no data.
-- **Try:** "Who is this?", "What day is it?", "Where are my keys?", "Who's coming today?", "Who is Sam?", "Remind me in 10 minutes to drink water."
-- **Emergency:** "I fell and I can't get up". Steph tells you to call 911 and texts `CAREGIVER_NUMBER`.
-- **Reminder call:** ask Steph to set a reminder, or create one in the app flow. The `/cron/dial-reminders` route places due calls. Locally:
-
-  ```sh
-  curl -H "Authorization: Bearer $CRON_SECRET" http://127.0.0.1:3187/cron/dial-reminders
-  ```
+See [validation](docs/testing/README.md) for disposable Postgres tests, iOS testing, and the distinction between local fixtures and live integration evidence.

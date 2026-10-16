@@ -1,106 +1,73 @@
 # Recall for iPhone
 
-One agent, one screen. **Steph** remembers your life so you don't have to: she answers when you ask ("Where are my keys?", "Who's Sam again?") and speaks first before you forget ("You're seeing Priya at 3. Ask how her mom is doing.").
+The iPhone app for [Recall](../README.md), built for the **Andreessen Horowitz (a16z) SpeedHacks hackathon**.
 
-Everything Steph shows is a card that rises from her orb, ends with a mono source line, and has one main action. Heavy work (photo understanding, indexing) happens quietly, mostly while the phone charges.
+Meet **Steph**: a voice and text memory assistant with one home screen, an animated orb, and cards grounded in source memories. Ask where your keys were last seen, recall someone you know, or see context before an upcoming meeting.
 
-![Demo flow](docs/demo-flow.png)
+![Recall demo flow: onboarding, permissions, the home screen, a reminder, keys, and a person card](docs/demo-flow.png)
+
+*iPhone simulator screenshots with fictional demo memories.*
 
 ## Run it
 
-Requirements: Xcode 26 (built with 26.6), iOS 17+. The generated `Recall.xcodeproj` is committed; [XcodeGen](https://github.com/yonaskolb/XcodeGen) is only needed after adding or removing files (`cd ios && xcodegen generate`).
+Requires Xcode 26 and iOS 17+. The generated `Recall.xcodeproj` is committed. [XcodeGen](https://github.com/yonaskolb/XcodeGen) is only needed after changing project file membership: run `cd ios && xcodegen generate`.
 
-1. `cp ios/Config/Local.xcconfig.example ios/Config/Local.xcconfig` (gitignored) and set:
-   - `RECALL_TEAM`: your Apple team ID, and `RECALL_BUNDLE_ID`: a bundle ID that team can sign.
-   - `RECALL_APP_TOKEN`: the backend's `RECALL_APP_TOKEN` (see below). Leave it empty to run fully on-device.
-   - Free personal teams cannot use Sign in with Apple: set `RECALL_ENTITLEMENTS = Recall/Recall-NoSIWA.entitlements`.
-2. Open `ios/Recall.xcodeproj`, pick the **Recall** scheme and your iPhone, and run.
+1. From the repository root, copy `ios/Config/Local.xcconfig.example` to `ios/Config/Local.xcconfig` (gitignored).
+2. For a physical device, set your Apple `RECALL_TEAM` and a `RECALL_BUNDLE_ID` your team can sign. A free personal team can set `RECALL_ENTITLEMENTS = Recall/Recall-NoSIWA.entitlements`; the app then uses a local profile.
+3. Open `ios/Recall.xcodeproj`, select **Recall**, choose a simulator or device, and run.
 
-The simulator works for everything except the microphone-heavy parts and real photo/calendar data. Type to Steph instead of talking.
+Leave `RECALL_APP_TOKEN` empty to run with on-device answers. Type questions in the simulator; use a physical device to validate speech, notifications, real photo/calendar access, and background behavior.
 
-### Connected memories
+## Demo mode
 
-To use the same Gmail, calendar and camera evidence as Steph on the phone, follow [device pairing](../docs/ios-memory.md). Pairing is separate from the legacy app token below. Demo mode stays isolated.
+Triple-tap the **Recall** wordmark or use Settings → **Demo memories**. The fictional memories are dated relative to today, and demo searches stay separate from real records.
 
-### Backend (Claude or Gemini, embeddings)
+1. Open the home screen to meet Steph and her animated orb.
+2. Choose **Show Priya reminder** for a card about coffee at 3 and a thoughtful follow-up. **Buzz me in 10 seconds** schedules the notification version; allow notifications, then lock the phone or go home.
+3. Ask “Where are my keys?” The photo card includes its source and time. **Not there** searches again without that memory.
+4. Ask “Who's Sam again?” to see a person card with linked details and a promise to send a restaurant recommendation.
 
-Steph's brain is the existing Recall service in this repo (`backend/steph/`): `POST /embed`, `/ask` and `/reminders`. The service holds provider API keys and supports Claude or Gemini, so the app never contains one. See [Steph API](../README.md#steph-api-ios-app) for the contract.
-
-| Variable | Where | Purpose |
-| --- | --- | --- |
-| `RECALL_APP_TOKEN` | Backend + `ios/Config/Local.xcconfig` | Shared app secret, ≥32 characters. Empty disables the three endpoints (503) |
-| `ANTHROPIC_API_KEY` | Backend only | Claude for `/ask` and `/reminders` |
-| `STEPH_MODEL` | Backend only | Default `claude-opus-5-5` (low effort, structured JSON output) |
-| `VOYAGE_API_KEY` | Backend only | Voyage embeddings for `/embed`; optional |
-| `EMBED_MODEL` | Backend only | Default `voyage-3.5-lite` |
-| `RECALL_API_BASE_URL` | `ios/Config/Local.xcconfig` | Default production `https://recall-kappa-nine.vercel.app`. Write `https:/$()/host` because xcconfig treats `//` as a comment. Use `http:/$()/127.0.0.1:3000` for a local backend (`npm start`) from the simulator |
-
-For the legacy stateless API, set the required variables in the Vercel project's Production environment and redeploy. Until then, or with no network, the app answers **on-device**. The fallback only repeats what a stored memory says, never composes new facts, and says "I'm not sure" with the closest memory when nothing matches well.
-
-## Demo mode (3-minute script)
-
-Demo mode loads seeded memories, dated relative to today, so the live demo never depends on a fresh phone:
-
-- Photo: keys on the kitchen counter next to the fruit bowl, today 8:12 AM.
-- Calendar: coffee with Priya today at 3:00 PM.
-- Note: Priya's mom had surgery (two weeks ago, Sep 27 when today is Oct 11).
-- Person: Sam Chen: new design job in September, son Leo just turned 4, you promised to send him the Tokyo ramen place. Last seen at lunch three weeks ago.
-- Parking: Level 3, spot 42.
-
-**Turn it on:** triple-tap the **Recall** wordmark (or Settings → Demo memories). While demo mode is on, Steph only searches demo memories.
-
-1. Open the app: just Steph's orb, breathing.
-2. Phone buzzes: Settings → **Buzz me in 10 seconds**, then lock the phone or go home. The Priya notification arrives, and tapping it opens the card. **Show Priya reminder** shows the card immediately instead.
-3. Tap the mic: "Where are my keys?" Tap again when done. The keys card has the photo, and "Not there" makes Steph look again.
-4. "Who's Sam again?" The person card shows what's worth remembering, when you last saw him, and the promise you forgot.
+The bundled keys photo shows keys on a wooden table; the fictional memory mentions a kitchen counter and fruit bowl. Replace it with an appropriate photo of your own before presenting that example as grounded visual evidence. See [asset credits](Recall/Resources/CREDITS.md).
 
 ### Medicine reminder demo
 
-Settings → **Demo memories** → **Show medicine reminder** displays and speaks the fictional reminder immediately. **Medicine reminder in 10 seconds** schedules a local notification; allow notifications, then lock the phone or go home and tap the notification to open its card. The card and notification say Demo. **Thanks!** dismisses it; it does not record that medicine was taken. This is a one-off demo, not a recurring medication schedule.
+Settings → **Demo memories** → **Show medicine reminder** opens and speaks a fictional reminder. **Medicine reminder in 10 seconds** schedules a local notification. Both are labeled Demo, and **Thanks!** dismisses the card without recording that medicine was taken.
 
-For the separate simulated phone-call flow, run `npm run demo:medicine` from the repository root. The two demos do not synchronize.
+For the separate offline phone-reminder walkthrough, run `npm run demo:medicine` from the repository root. It sends no calls or texts; the two demos do not synchronize.
 
-Closing line: *"You can't ask about what you forgot. Steph can."*
+## Connected services
 
-The bundled demo photo (Unsplash, see `Recall/Resources/CREDITS.md`) shows keys on a wooden table with no fruit bowl. For the demo, replace `Recall/Resources/Assets.xcassets/DemoKeys.imageset/DemoKeys.jpg` with a photo of your own keys next to a fruit bowl.
+### Model-backed answers
 
-## How Steph works
+The existing Node backend provides `/ask`, `/reminders`, and `/embed`. Provider keys stay on the backend. The shared app token gates these legacy stateless endpoints and cannot read shared personal records. See the [API contracts](../docs/development.md#steph-api-ios-app).
 
-```mermaid
-flowchart LR
-    You((You)) -- voice / text --> Speech[Apple Speech, on-device]
-    Speech --> Retriever
-    Store[(SwiftData: memories, people, places, links)] --> Retriever
-    Retriever -- top 12 memories + question --> Ask[/ask on Recall backend/]
-    Ask -- Claude JSON --> Card[Card + spoken answer]
-    Retriever -. offline .-> Local[On-device fallback] --> Card
-    Indexer[Indexer: Photos + Vision, Calendar, Contacts, Visits, Parking] --> Store
-    Proactive[ProactiveEngine: hourly + 1h before events] --> Notify[Reminder card + notification]
-    Store --> Proactive
-```
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `RECALL_APP_TOKEN` | Backend and local iOS build settings | Separate app token, at least 32 characters; leave empty for on-device answers |
+| `RECALL_API_BASE_URL` | Local iOS build settings | Backend origin; use `http:/$()/127.0.0.1:3000` for a Mac-local backend from the simulator |
+| `STEPH_PROVIDER` | Backend | `auto`, `claude`, or `gemini`; automatic selection prefers Claude when its key is set |
+| `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | Backend | Optional answer provider |
+| `VOYAGE_API_KEY` | Backend | Optional embeddings; on-device alternatives remain available |
 
-- **Remembering.** Nothing records continuously. Vision runs on-device over photo thumbnails (scene labels, text, anonymous face groups) in a `BGProcessingTask` that requires external power. A light pass of the newest 40 photos runs at launch. iCloud-only photos are skipped rather than downloaded. Calendar (attendees, locations), Contacts (names, birthdays, relationships), Core Location visits and significant changes, and parking (saved when a CarPlay or car-named Bluetooth audio route drops) fill the graph tables: people ↔ memories ↔ places. Statements you say or type ("I put my passport in the desk drawer") become notes.
-- **Asking.** On-device speech → hybrid retrieval (embedding cosine + word overlap with synonyms + people and time filters + recency, weighted by confidence) → the top 12 memories (plus a mentioned person's linked memories) go to `/ask` → `{answer, card_type, memory_ids, buttons}` → a card. The source line and "how I know" line come from the cited memories' own metadata, never from the model. The answer is spoken with the best available warm female system voice, and the orb follows the real TTS audio level.
-- **Speaking first.** `ProactiveEngine` scores candidates by usefulness × timeliness × confidence − annoyance. Candidates are: an upcoming meeting plus what you know about them, an open promise, a birthday within 3 days, where you parked, and keys when you leave home. It allows at most 3 per day, none in quiet hours (9pm–8am), and schedules each one an hour before the event. `/reminders` phrases what to say or do; without it, the memory's own follow-up text is used.
-- **Feedback.** Thanks / Found them raise a memory's confidence; Not there lowers it (×0.6) and Steph looks again without it. Feedback on reminder types feeds the annoyance score.
-- **Privacy.** Photos never leave the phone; only short text summaries of the dozen memories needed for one answer are sent, and the backend stores none of them. iOS does not allow reading iMessages, and Recall doesn't try.
+In xcconfig files, write HTTPS URLs as `https:/$()/host` because `//` starts a comment. Configure the backend using the [development guide](../docs/development.md). On-device fallback repeats stored memory details and reports uncertainty when evidence is insufficient.
 
-## Decisions
+### Shared memories
 
-The spec said to decide rather than ask. These are the calls made, and why:
+[Pair a device](../docs/ios-memory.md) to query the same patient-scoped Google Calendar, Gmail, and camera evidence as the phone assistant. Pairing uses a separate credential stored in device-only Keychain storage. It enables read-only lookups and keeps shared evidence transient, outside the local SwiftData store.
 
-1. **One backend.** Steph's endpoints were added to the existing Recall Express service on Vercel instead of a new service, matching the team's one-hosted-service setup. Paths are the spec's `/embed`, `/ask`, `/reminders`. Existing deployments keep booting because every new variable is optional.
-2. **Search on the phone, no pgvector.** Memories and embeddings live in SwiftData, and retrieval runs on-device. The backend is stateless and needs no schema migration of the production Neon database. This also means personal memories are never stored server-side. Embeddings come from the backend (Voyage) when configured, otherwise from Apple's on-device sentence embedding, and word overlap keeps search working with neither.
-3. **Claude `claude-opus-5-5` at low effort** with structured JSON output and server-side refusal fallbacks. The system prompt is used verbatim. The backend drops any memory ID the phone didn't send and clamps to two buttons.
-4. **Person cards are assembled on-device** from the person's linked memories ("worth remembering", "last time", "you promised"). The model writes only the headline sentence, so every line traces to a memory.
-5. **Questions aren't stored as memories.** Statements are. Storing "Where are my keys?" would make it the top match for the next keys question.
-6. **Demo mode searches only demo memories**, so the live demo can't be derailed by real data on the presenter's phone. The "REMEMBERING n MOMENTS" count stays live and real.
-7. **Notifications** are requested right after the four permissions, because reminders need them.
-8. **Sign in with Apple** sits behind the design's white "Get started" pill. If Apple sign-in is unavailable (no Apple ID, simulator, personal team), the app keeps a local-only profile. The backend uses a shared app token, which is a demo restriction like the repo's caller allowlist. Real users need per-user auth.
-9. **Parking detection** only works while iOS keeps the app alive or suspended in memory: apps aren't woken for audio-route changes. Visit place names use Apple's reverse geocoder, so visit coordinates go to Apple; photos don't.
-10. **The orb.** `StephOrb(size:state:level:)` is reusable and has all four states, using the spec's numbers for scale breathing, listening pulse and ripples, thinking glow, and replying wobble and glow. The listening pulse follows the live mic level and the replying glow follows the TTS level. It respects Reduce Motion. Mid-build the file was redesigned on disk by another editor into a pink orb with blinking eyes and film grain. That version is kept, so the spec's cloud rotation is gone. The cloud reference image (`OrbClouds`, recoloured from the design file) is still in the asset catalog and is the app icon's source.
+## How it works
+
+- **Memory.** SwiftData stores memories and links to people and places. On-device Vision indexes photo thumbnails; Calendar, Contacts, location visits, and parking events provide additional context. Statements become notes; questions do not.
+- **Retrieval.** Embedding similarity, word overlap, people, time filters, recency, and confidence select local memories. Cards derive source lines from cited metadata.
+- **Reminders.** Upcoming events, promises, birthdays, and parking context become candidates. Quiet hours, a daily cap, and feedback limit interruptions.
+- **Presentation.** SwiftUI cards share one main action. The orb follows listening and speaking activity and respects Reduce Motion.
+- **Privacy.** Phone photos stay on the device. Model-backed answers send selected text snippets; the legacy answer routes do not store them. Shared-memory services and the separate webcam uploader have their own backend storage and credentials.
+
+Design and architecture decisions are recorded in the [engineering guide](../AGENTS.md#decision-log).
 
 ## Tests
+
+From the repository root on macOS:
 
 ```sh
 cd ios
@@ -108,11 +75,6 @@ xcodebuild -project Recall.xcodeproj -scheme Recall \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' CODE_SIGNING_ALLOWED=NO test
 ```
 
-- **Unit tests** (`RecallTests`): retrieval ranking, local answers, card building and source lines, proactive scoring, quiet hours and the daily cap, the store and graph, and the orb motion formulas.
-- **UI test** (`RecallUITests/WalkthroughTests`): walks the demo script and the onboarding screens, attaching a screenshot per step. Export them with `xcrun xcresulttool export attachments --path <result bundle> --output-path <dir>`.
-- **Launch arguments:** `-RecallInMemoryStore`, `-RecallDemo`, `-RecallSkipOnboarding`, `-phase permissions`.
+Choose a simulator installed in your Xcode version. Unit tests cover retrieval, local answers, cards, proactive reminders, storage, and motion. The UI walkthrough attaches screenshots for demo and onboarding steps.
 
-## Not verified yet
-
-- **Real devices.** All runs so far were in the simulator (iPhone 17 Pro and iPhone SE). Untested: real Sign in with Apple, on-device speech recognition, background tasks, visit/parking detection, and Vision over a real photo library.
-- **Live models.** No live Claude or Voyage call has been made. The app ↔ backend contract was exercised against the real Express routes with a stubbed Claude client.
+Launch arguments include `-RecallInMemoryStore`, `-RecallDemo`, `-RecallSkipOnboarding`, and `-phase permissions`. See [validation and known gaps](../docs/testing/README.md) for the distinction between local tests, historical live checks, and physical-device acceptance.

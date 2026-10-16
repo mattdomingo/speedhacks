@@ -1,4 +1,6 @@
-# Bugs
+# Defect log — October 11, 2026
+
+Historical findings from the hackathon test pass. Statuses below describe that revision; see the [test report](2026-10-11.md) for its scope.
 
 Every defect found while running, testing and stress-testing Recall on 2026-10-11, in the format the test plan asks for. ID prefixes:
 - **B-xx**: backend, MCP and Dial (automated tests with fakes).
@@ -207,7 +209,7 @@ Area: LLM
 Repro: Live `/ask` "What time is it?".
 Expected / Actual: the current time / "I'm not sure what time it is since that isn't in my memories".
 Root cause: the verbatim product prompt lets Steph use only `<memories>`, and the clock wasn't one.
-Fix: every `/ask` carries a `clock-now` memory ("Right now it is …" in the person's zone), and the backend accepts it as a citable id (`backend/steph/prompt.mjs`, `routes.mjs`). The app renders that citation as a clock source line. Tests in `steph*.test.mjs`. Re-tested in the final live golden run (see TESTING.md).
+Fix: every `/ask` carries a `clock-now` memory ("Right now it is …" in the person's zone), and the backend accepts it as a citable id (`backend/steph/prompt.mjs`, `routes.mjs`). The app renders that citation as a clock source line. Tests in `steph*.test.mjs`. Re-tested in the final live golden run (see the [test report](2026-10-11.md)).
 Status: Fixed + re-tested
 
 ## [E-04] Live call transcripts never became memories (`transcriptTurns` is null)
